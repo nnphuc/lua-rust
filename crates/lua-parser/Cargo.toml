@@ -1,0 +1,10 @@
+[package]
+name = "lua-parser"
+description = "Lua 5.4 recursive-descent parser producing an AST"
+edition.workspace = true
+version.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+lua-core  = { workspace = true }
+lua-lexer = { workspace = true }

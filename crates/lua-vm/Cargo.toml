@@ -1,0 +1,14 @@
+[package]
+name = "lua-vm"
+description = "Register-based virtual machine that executes Lua bytecode"
+edition.workspace = true
+version.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+lua-core     = { workspace = true }
+lua-compiler = { workspace = true }
+tracing      = { workspace = true }
+
+[dev-dependencies]
+lua-parser   = { workspace = true }

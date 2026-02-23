@@ -1,0 +1,9 @@
+[package]
+name = "lua-core"
+description = "Core types, errors, and traits for the Lua-Rust runtime"
+edition.workspace = true
+version.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }

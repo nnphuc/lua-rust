@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/lua-core",
+    "crates/lua-lexer",
+    "crates/lua-parser",
+    "crates/lua-compiler",
+    "crates/lua-vm",
+    "crates/lua-repl",
+]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+rust-version = "1.75.0"
+license = "MIT"
+
+[workspace.dependencies]
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# internal crates
+lua-core     = { path = "crates/lua-core" }
+lua-lexer    = { path = "crates/lua-lexer" }
+lua-parser   = { path = "crates/lua-parser" }
+lua-compiler = { path = "crates/lua-compiler" }
+lua-vm       = { path = "crates/lua-vm" }

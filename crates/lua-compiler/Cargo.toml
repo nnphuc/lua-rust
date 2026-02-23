@@ -1,0 +1,10 @@
+[package]
+name = "lua-compiler"
+description = "Compiles a Lua AST to bytecode instructions"
+edition.workspace = true
+version.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+lua-core   = { workspace = true }
+lua-parser = { workspace = true }

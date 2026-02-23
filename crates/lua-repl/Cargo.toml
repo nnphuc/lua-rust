@@ -1,0 +1,17 @@
+[package]
+name = "lua-repl"
+description = "Command-line REPL and script runner for lua-rust"
+edition.workspace = true
+version.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "lua"
+path = "src/main.rs"
+
+[dependencies]
+lua-core     = { workspace = true }
+lua-parser   = { workspace = true }
+lua-compiler = { workspace = true }
+lua-vm       = { workspace = true }
+tracing-subscriber = { workspace = true }

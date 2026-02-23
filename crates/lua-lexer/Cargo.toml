@@ -1,0 +1,9 @@
+[package]
+name = "lua-lexer"
+description = "Lua 5.4 tokenizer"
+edition.workspace = true
+version.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+lua-core = { workspace = true }

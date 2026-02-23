@@ -938,8 +938,50 @@ impl Compiler {
         // Use a helper that handles expr compilation with parent awareness.
         match stmt {
             Stmt::Local { names, values, .. } => {
+                let n_names = names.len();
                 let mut val_regs: Vec<u8> = Vec::new();
-                for val in values {
+                for (vi, val) in values.iter().enumerate() {
+                    let is_last = vi == values.len() - 1;
+                    let remaining = n_names.saturating_sub(val_regs.len());
+
+                    if is_last && remaining > 1 {
+                        if let Expr::FnCall { func, args, .. } = val {
+                            let func_reg = self.compile_expr_impl(func, Some(parent))?;
+                            let num_args = self.compile_call_args(args, func_reg + 1)?;
+                            self.proto.emit(OpCode::Call {
+                                func: func_reg,
+                                num_args,
+                                num_results: remaining as u8,
+                            });
+                            let mut targets: Vec<u8> = Vec::new();
+                            for _ in 0..remaining {
+                                targets.push(self.frame.alloc()?);
+                            }
+                            let src_start = func_reg;
+                            let dst_start = targets[0];
+                            if dst_start <= src_start {
+                                for i in 0..remaining {
+                                    let src = func_reg + i as u8;
+                                    let dst = targets[i];
+                                    if dst != src {
+                                        self.proto.emit(OpCode::Move { dst, src });
+                                    }
+                                    val_regs.push(dst);
+                                }
+                            } else {
+                                for i in (0..remaining).rev() {
+                                    let src = func_reg + i as u8;
+                                    let dst = targets[i];
+                                    if dst != src {
+                                        self.proto.emit(OpCode::Move { dst, src });
+                                    }
+                                }
+                                val_regs.extend_from_slice(&targets);
+                            }
+                            break;
+                        }
+                    }
+
                     val_regs.push(self.compile_expr_with_parent(val, parent)?);
                 }
                 for (i, ln) in names.iter().enumerate() {
@@ -955,7 +997,50 @@ impl Compiler {
                 targets, values, ..
             } => {
                 let mut val_regs: Vec<u8> = Vec::new();
-                for val in values {
+                let n_targets = targets.len();
+                for (vi, val) in values.iter().enumerate() {
+                    let is_last = vi == values.len() - 1;
+                    let remaining = n_targets.saturating_sub(val_regs.len());
+
+                    if is_last && remaining > 1 {
+                        if let Expr::FnCall { func, args, .. } = val {
+                            let func_reg = self.compile_expr_impl(func, Some(parent))?;
+                            let num_args = self.compile_call_args(args, func_reg + 1)?;
+                            self.proto.emit(OpCode::Call {
+                                func: func_reg,
+                                num_args,
+                                num_results: remaining as u8,
+                            });
+
+                            let mut targets: Vec<u8> = Vec::new();
+                            for _ in 0..remaining {
+                                targets.push(self.frame.alloc()?);
+                            }
+                            let src_start = func_reg;
+                            let dst_start = targets[0];
+                            if dst_start <= src_start {
+                                for i in 0..remaining {
+                                    let src = func_reg + i as u8;
+                                    let dst = targets[i];
+                                    if dst != src {
+                                        self.proto.emit(OpCode::Move { dst, src });
+                                    }
+                                    val_regs.push(dst);
+                                }
+                            } else {
+                                for i in (0..remaining).rev() {
+                                    let src = func_reg + i as u8;
+                                    let dst = targets[i];
+                                    if dst != src {
+                                        self.proto.emit(OpCode::Move { dst, src });
+                                    }
+                                }
+                                val_regs.extend_from_slice(&targets);
+                            }
+                            break;
+                        }
+                    }
+
                     val_regs.push(self.compile_expr_with_parent(val, parent)?);
                 }
                 for (i, target) in targets.iter().enumerate() {

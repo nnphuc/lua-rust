@@ -1,6 +1,7 @@
 use lua_compiler::Chunk;
 use lua_core::{LuaClosure, LuaError, LuaTable, LuaValue, OpCode, Proto, Upvalue, UpvalueDesc, UpvalueInner};
 use std::collections::HashMap;
+use std::cell::Cell;
 use std::sync::{Arc, RwLock};
 
 // ── Call frame ────────────────────────────────────────────────────────────────
@@ -22,17 +23,59 @@ struct CallFrame {
     varargs: Vec<LuaValue>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CoroutineStatus {
+    Suspended,
+    Running,
+    Dead,
+}
+
+struct CoroutineState {
+    status: CoroutineStatus,
+    root: LuaValue,
+    started: bool,
+    frames: Vec<CallFrame>,
+    regs: Vec<LuaValue>,
+    open_upvalues: Vec<(usize, Upvalue)>,
+    pending_yield_target: Option<(usize, u8)>, // (abs result base, expected results)
+}
+
+impl CoroutineState {
+    fn new(root: LuaValue) -> Self {
+        Self {
+            status: CoroutineStatus::Suspended,
+            root,
+            started: false,
+            frames: Vec::new(),
+            regs: vec![LuaValue::Nil; 1024],
+            open_upvalues: Vec::new(),
+            pending_yield_target: None,
+        }
+    }
+}
+
+enum RunOutcome {
+    Returned(Vec<LuaValue>),
+    Yielded(Vec<LuaValue>),
+}
+
 // ── VM ────────────────────────────────────────────────────────────────────────
 
 /// Register-based virtual machine that executes Lua bytecode.
 pub struct Vm {
     globals: HashMap<String, LuaValue>,
+    coroutines: HashMap<u64, CoroutineState>,
+    next_coroutine_id: u64,
+    current_coroutine: Option<u64>,
 }
 
 impl Vm {
     pub fn new() -> Self {
         let mut vm = Vm {
             globals: HashMap::new(),
+            coroutines: HashMap::new(),
+            next_coroutine_id: 1,
+            current_coroutine: None,
         };
         crate::stdlib::register(&mut vm.globals);
         vm
@@ -42,7 +85,122 @@ impl Vm {
     pub fn execute(&mut self, chunk: &Chunk) -> Result<LuaValue, LuaError> {
         // Wrap the top-level proto in a closure (no upvalues needed)
         let closure = Arc::new(LuaClosure::new(chunk.proto.clone(), vec![]));
+        let _guard = self.enter_tls();
         self.run(closure)
+    }
+
+    pub(crate) fn is_in_coroutine(&self) -> bool {
+        self.current_coroutine.is_some()
+    }
+
+    pub(crate) fn coroutine_create(&mut self, func: LuaValue) -> Result<LuaValue, LuaError> {
+        match func {
+            LuaValue::Closure(_) | LuaValue::NativeFunction(_) => {
+                let id = self.next_coroutine_id;
+                self.next_coroutine_id += 1;
+                self.coroutines.insert(id, CoroutineState::new(func));
+                Ok(LuaValue::Thread(id))
+            }
+            v => Err(LuaError::TypeError { expected: "function", got: v.type_name() }),
+        }
+    }
+
+    pub(crate) fn coroutine_status(&self, co: &LuaValue) -> Result<&'static str, LuaError> {
+        let id = match co {
+            LuaValue::Thread(id) => *id,
+            v => return Err(LuaError::TypeError { expected: "thread", got: v.type_name() }),
+        };
+        if self.current_coroutine == Some(id) {
+            return Ok("running");
+        }
+        match self.coroutines.get(&id) {
+            Some(c) => Ok(match c.status {
+                CoroutineStatus::Suspended => "suspended",
+                CoroutineStatus::Running => "running",
+                CoroutineStatus::Dead => "dead",
+            }),
+            None => Ok("dead"),
+        }
+    }
+
+    pub(crate) fn coroutine_running(&self) -> (LuaValue, bool) {
+        match self.current_coroutine {
+            Some(id) => (LuaValue::Thread(id), false),
+            None => (LuaValue::Nil, true),
+        }
+    }
+
+    pub(crate) fn coroutine_resume(
+        &mut self,
+        co: LuaValue,
+        args: Vec<LuaValue>,
+    ) -> Result<Vec<LuaValue>, LuaError> {
+        let id = match co {
+            LuaValue::Thread(id) => id,
+            v => return Err(LuaError::TypeError { expected: "thread", got: v.type_name() }),
+        };
+
+        let mut state = match self.coroutines.remove(&id) {
+            Some(s) => s,
+            None => {
+                return Ok(vec![
+                    LuaValue::Boolean(false),
+                    LuaValue::LuaString("cannot resume dead coroutine".into()),
+                ])
+            }
+        };
+
+        if state.status == CoroutineStatus::Dead {
+            self.coroutines.insert(id, state);
+            return Ok(vec![
+                LuaValue::Boolean(false),
+                LuaValue::LuaString("cannot resume dead coroutine".into()),
+            ]);
+        }
+        if state.status == CoroutineStatus::Running {
+            self.coroutines.insert(id, state);
+            return Ok(vec![
+                LuaValue::Boolean(false),
+                LuaValue::LuaString("cannot resume running coroutine".into()),
+            ]);
+        }
+
+        let prev = self.current_coroutine;
+        self.current_coroutine = Some(id);
+        state.status = CoroutineStatus::Running;
+
+        let _guard = self.enter_tls();
+        let outcome = self.run_coroutine_state(&mut state, args);
+
+        self.current_coroutine = prev;
+        let result = match outcome {
+            Ok(RunOutcome::Yielded(vals)) => {
+                state.status = CoroutineStatus::Suspended;
+                let mut out = vec![LuaValue::Boolean(true)];
+                out.extend(vals);
+                out
+            }
+            Ok(RunOutcome::Returned(vals)) => {
+                state.status = CoroutineStatus::Dead;
+                let mut out = vec![LuaValue::Boolean(true)];
+                out.extend(vals);
+                out
+            }
+            Err(LuaError::Yield(_)) => {
+                state.status = CoroutineStatus::Dead;
+                vec![
+                    LuaValue::Boolean(false),
+                    LuaValue::LuaString("attempt to yield from outside a coroutine".into()),
+                ]
+            }
+            Err(e) => {
+                state.status = CoroutineStatus::Dead;
+                vec![LuaValue::Boolean(false), LuaValue::LuaString(e.to_string())]
+            }
+        };
+
+        self.coroutines.insert(id, state);
+        Ok(result)
     }
 
     // ── Core interpreter loop ─────────────────────────────────────────────────
@@ -70,7 +228,7 @@ impl Vm {
                 // Implicit return nil
                 let _ = frame;
                 match self.return_from_frame(&mut frames, vec![LuaValue::Nil], &mut regs, &mut open_upvalues) {
-                    Some(final_val) => return Ok(final_val),
+                    Some(final_vals) => return Ok(final_vals.into_iter().next().unwrap_or(LuaValue::Nil)),
                     None => continue,
                 }
             }
@@ -301,7 +459,7 @@ impl Vm {
                         (0..n).map(|i| regs[base + *src as usize + i].clone()).collect()
                     };
                     match self.return_from_frame(&mut frames, vals, &mut regs, &mut open_upvalues) {
-                        Some(final_val) => return Ok(final_val),
+                        Some(final_vals) => return Ok(final_vals.into_iter().next().unwrap_or(LuaValue::Nil)),
                         None => continue,
                     }
                 }
@@ -346,6 +504,328 @@ impl Vm {
                 // ── Varargs ───────────────────────────────────────────────────
                 OpCode::VarArg { dst, count } => {
                     let varargs = frames.last().unwrap().varargs.clone();
+                    let n = if *count == 255 { varargs.len() } else { *count as usize };
+                    for i in 0..n {
+                        reg!(*dst + i as u8) = varargs.get(i).cloned().unwrap_or(LuaValue::Nil);
+                    }
+                }
+
+                _ => {
+                    return Err(LuaError::Internal(format!(
+                        "unimplemented opcode: {:?}",
+                        &proto.instructions[ip]
+                    )));
+                }
+            }
+        }
+    }
+
+    fn run_coroutine_state(
+        &mut self,
+        state: &mut CoroutineState,
+        resume_args: Vec<LuaValue>,
+    ) -> Result<RunOutcome, LuaError> {
+        if !state.started {
+            state.started = true;
+            match state.root.clone() {
+                LuaValue::Closure(root) => {
+                    let param_count = root.proto.param_count as usize;
+                    let n = param_count.min(resume_args.len());
+                    state.regs[0..n].clone_from_slice(&resume_args[..n]);
+                    for i in resume_args.len()..param_count {
+                        state.regs[i] = LuaValue::Nil;
+                    }
+                    let varargs = if root.proto.is_vararg && resume_args.len() > param_count {
+                        resume_args[param_count..].to_vec()
+                    } else {
+                        vec![]
+                    };
+                    state.frames.push(CallFrame {
+                        closure: root,
+                        ip: 0,
+                        base: 0,
+                        result_base: None,
+                        expected_results: 255,
+                        varargs,
+                    });
+                }
+                LuaValue::NativeFunction(f) => {
+                    let vals = f(resume_args)?;
+                    return Ok(RunOutcome::Returned(vals));
+                }
+                other => {
+                    return Err(LuaError::TypeError {
+                        expected: "function",
+                        got: other.type_name(),
+                    })
+                }
+            }
+        } else if let Some((result_base, expected)) = state.pending_yield_target.take() {
+            for i in 0..(expected as usize) {
+                state.regs[result_base + i] =
+                    resume_args.get(i).cloned().unwrap_or(LuaValue::Nil);
+            }
+        }
+
+        loop {
+            let frame = state.frames.last_mut().unwrap();
+            let proto = &frame.closure.proto;
+
+            if frame.ip >= proto.instructions.len() {
+                let _ = frame;
+                match self.return_from_frame(
+                    &mut state.frames,
+                    vec![LuaValue::Nil],
+                    &mut state.regs,
+                    &mut state.open_upvalues,
+                ) {
+                    Some(final_vals) => return Ok(RunOutcome::Returned(final_vals)),
+                    None => continue,
+                }
+            }
+
+            let ip = frame.ip;
+            let base = frame.base;
+            frame.ip += 1;
+
+            macro_rules! reg {
+                ($r:expr) => {
+                    state.regs[base + $r as usize]
+                };
+            }
+
+            match &proto.instructions[ip].clone() {
+                OpCode::LoadNil { dst } => reg!(*dst) = LuaValue::Nil,
+                OpCode::LoadBool { dst, value, skip } => {
+                    reg!(*dst) = LuaValue::Boolean(*value);
+                    if *skip {
+                        state.frames.last_mut().unwrap().ip += 1;
+                    }
+                }
+                OpCode::LoadConst { dst, const_idx } => {
+                    reg!(*dst) = proto.constants[*const_idx as usize].clone();
+                }
+                OpCode::Move { dst, src } => {
+                    reg!(*dst) = reg!(*src).clone();
+                }
+
+                OpCode::Add { dst, lhs, rhs } => {
+                    reg!(*dst) = arith_add(&reg!(*lhs).clone(), &reg!(*rhs).clone())?;
+                }
+                OpCode::Sub { dst, lhs, rhs } => {
+                    reg!(*dst) = arith_sub(&reg!(*lhs).clone(), &reg!(*rhs).clone())?;
+                }
+                OpCode::Mul { dst, lhs, rhs } => {
+                    reg!(*dst) = arith_mul(&reg!(*lhs).clone(), &reg!(*rhs).clone())?;
+                }
+                OpCode::Div { dst, lhs, rhs } => {
+                    reg!(*dst) = arith_div(&reg!(*lhs).clone(), &reg!(*rhs).clone())?;
+                }
+                OpCode::IDiv { dst, lhs, rhs } => {
+                    reg!(*dst) = arith_idiv(&reg!(*lhs).clone(), &reg!(*rhs).clone())?;
+                }
+                OpCode::Mod { dst, lhs, rhs } => {
+                    reg!(*dst) = arith_mod(&reg!(*lhs).clone(), &reg!(*rhs).clone())?;
+                }
+                OpCode::Pow { dst, lhs, rhs } => {
+                    reg!(*dst) = arith_pow(&reg!(*lhs).clone(), &reg!(*rhs).clone())?;
+                }
+                OpCode::Unm { dst, src } => {
+                    reg!(*dst) = arith_unm(&reg!(*src).clone())?;
+                }
+
+                OpCode::Eq { dst, lhs, rhs } => {
+                    reg!(*dst) = LuaValue::Boolean(cmp_eq(&reg!(*lhs).clone(), &reg!(*rhs).clone()));
+                }
+                OpCode::Lt { dst, lhs, rhs } => {
+                    reg!(*dst) = LuaValue::Boolean(cmp_lt(&reg!(*lhs).clone(), &reg!(*rhs).clone())?);
+                }
+                OpCode::Le { dst, lhs, rhs } => {
+                    reg!(*dst) = LuaValue::Boolean(cmp_le(&reg!(*lhs).clone(), &reg!(*rhs).clone())?);
+                }
+                OpCode::Not { dst, src } => {
+                    reg!(*dst) = LuaValue::Boolean(!reg!(*src).is_truthy());
+                }
+
+                OpCode::Concat { dst, start, end } => {
+                    let a = to_string_coerce(&reg!(*start).clone())?;
+                    let b = to_string_coerce(&reg!(*end).clone())?;
+                    reg!(*dst) = LuaValue::LuaString(a + &b);
+                }
+                OpCode::Len { dst, src } => {
+                    let n = match &reg!(*src).clone() {
+                        LuaValue::LuaString(s) => s.len() as i64,
+                        LuaValue::Table(t) => t.read().unwrap().length(),
+                        v => {
+                            return Err(LuaError::TypeError {
+                                expected: "string or table",
+                                got: v.type_name(),
+                            })
+                        }
+                    };
+                    reg!(*dst) = LuaValue::Integer(n);
+                }
+
+                OpCode::Jump { offset } => {
+                    let new_ip = frame.ip as i64 + *offset as i64;
+                    state.frames.last_mut().unwrap().ip = new_ip as usize;
+                    continue;
+                }
+                OpCode::JumpIfFalse { src, offset } => {
+                    if !reg!(*src).is_truthy() {
+                        let new_ip = frame.ip as i64 + *offset as i64;
+                        state.frames.last_mut().unwrap().ip = new_ip as usize;
+                        continue;
+                    }
+                }
+                OpCode::JumpIfTrue { src, offset } => {
+                    if reg!(*src).is_truthy() {
+                        let new_ip = frame.ip as i64 + *offset as i64;
+                        state.frames.last_mut().unwrap().ip = new_ip as usize;
+                        continue;
+                    }
+                }
+
+                OpCode::GetGlobal { dst, name_idx } => {
+                    let name = &proto.names[*name_idx as usize];
+                    reg!(*dst) = self.globals.get(name).cloned().unwrap_or(LuaValue::Nil);
+                }
+                OpCode::SetGlobal { src, name_idx } => {
+                    let name = proto.names[*name_idx as usize].clone();
+                    self.globals.insert(name, reg!(*src).clone());
+                }
+
+                OpCode::GetUpvalue { dst, upval_idx } => {
+                    reg!(*dst) = self.read_upvalue(&state.frames.last().unwrap().closure, *upval_idx, &state.regs);
+                }
+                OpCode::SetUpvalue { src, upval_idx } => {
+                    let val = reg!(*src).clone();
+                    self.write_upvalue(&state.frames.last().unwrap().closure.clone(), *upval_idx, val, &mut state.regs);
+                }
+                OpCode::CloseUpvalues { from_reg } => {
+                    let abs_from = base + *from_reg as usize;
+                    close_upvalues_from(&mut state.open_upvalues, abs_from, &state.regs);
+                }
+
+                OpCode::Closure { dst, proto_idx } => {
+                    let child_proto = proto.protos[*proto_idx as usize].clone();
+                    let upvalues = self.instantiate_upvalues(
+                        &child_proto,
+                        &state.frames.last().unwrap().closure.clone(),
+                        base,
+                        &mut state.open_upvalues,
+                        &state.regs,
+                    );
+                    reg!(*dst) = LuaValue::Closure(Arc::new(LuaClosure::new(child_proto, upvalues)));
+                }
+
+                OpCode::Call { func, num_args, num_results } => {
+                    let func_val = reg!(*func).clone();
+                    let func_abs = base + *func as usize;
+                    let args: Vec<LuaValue> = (0..*num_args as usize)
+                        .map(|i| state.regs[func_abs + 1 + i].clone())
+                        .collect();
+
+                    match func_val {
+                        LuaValue::NativeFunction(f) => match f(args) {
+                            Ok(results) => {
+                                for i in 0..(*num_results as usize) {
+                                    state.regs[func_abs + i] =
+                                        results.get(i).cloned().unwrap_or(LuaValue::Nil);
+                                }
+                            }
+                            Err(LuaError::Yield(vals)) => {
+                                state.pending_yield_target = Some((func_abs, *num_results));
+                                return Ok(RunOutcome::Yielded(vals));
+                            }
+                            Err(e) => return Err(e),
+                        },
+                        LuaValue::Closure(callee) => {
+                            let new_base = func_abs;
+                            let param_count = callee.proto.param_count as usize;
+                            let n = param_count.min(args.len());
+                            state.regs[new_base..new_base + n].clone_from_slice(&args[..n]);
+                            for i in args.len()..param_count {
+                                state.regs[new_base + i] = LuaValue::Nil;
+                            }
+                            let varargs = if callee.proto.is_vararg && args.len() > param_count {
+                                args[param_count..].to_vec()
+                            } else {
+                                vec![]
+                            };
+                            state.frames.push(CallFrame {
+                                closure: callee,
+                                ip: 0,
+                                base: new_base,
+                                result_base: Some(func_abs),
+                                expected_results: *num_results,
+                                varargs,
+                            });
+                            continue;
+                        }
+                        other => {
+                            return Err(LuaError::TypeError {
+                                expected: "function",
+                                got: other.type_name(),
+                            })
+                        }
+                    }
+                }
+
+                OpCode::Return { src, num_results } => {
+                    let n = *num_results as usize;
+                    let vals: Vec<LuaValue> = if n == 0 {
+                        vec![LuaValue::Nil]
+                    } else {
+                        (0..n).map(|i| state.regs[base + *src as usize + i].clone()).collect()
+                    };
+                    match self.return_from_frame(
+                        &mut state.frames,
+                        vals,
+                        &mut state.regs,
+                        &mut state.open_upvalues,
+                    ) {
+                        Some(final_vals) => return Ok(RunOutcome::Returned(final_vals)),
+                        None => continue,
+                    }
+                }
+
+                OpCode::NewTable { dst } => {
+                    reg!(*dst) = LuaValue::Table(Arc::new(RwLock::new(LuaTable::new())));
+                }
+                OpCode::GetTable { dst, table, key } => {
+                    reg!(*dst) = match &reg!(*table).clone() {
+                        LuaValue::Table(t) => self.table_get_with_metamethod(t, &reg!(*key).clone())?,
+                        v => return Err(LuaError::TypeError { expected: "table", got: v.type_name() }),
+                    };
+                }
+                OpCode::SetTable { table, key, val } => {
+                    let k = reg!(*key).clone();
+                    let v = reg!(*val).clone();
+                    match reg!(*table).clone() {
+                        LuaValue::Table(t) => self.table_set_with_metamethod(&t, k, v)?,
+                        vv => return Err(LuaError::TypeError { expected: "table", got: vv.type_name() }),
+                    }
+                }
+                OpCode::GetField { dst, table, name_idx } => {
+                    let key = LuaValue::LuaString(proto.names[*name_idx as usize].clone());
+                    reg!(*dst) = match &reg!(*table).clone() {
+                        LuaValue::Table(t) => self.table_get_with_metamethod(t, &key)?,
+                        v => return Err(LuaError::TypeError { expected: "table", got: v.type_name() }),
+                    };
+                }
+                OpCode::SetField { table, name_idx, val } => {
+                    let key = LuaValue::LuaString(proto.names[*name_idx as usize].clone());
+                    let v = reg!(*val).clone();
+                    match reg!(*table).clone() {
+                        LuaValue::Table(t) => self.table_set_with_metamethod(&t, key, v)?,
+                        vv => return Err(LuaError::TypeError { expected: "table", got: vv.type_name() }),
+                    }
+                }
+                OpCode::SetList { .. } => {}
+
+                OpCode::VarArg { dst, count } => {
+                    let varargs = state.frames.last().unwrap().varargs.clone();
                     let n = if *count == 255 { varargs.len() } else { *count as usize };
                     for i in 0..n {
                         reg!(*dst + i as u8) = varargs.get(i).cloned().unwrap_or(LuaValue::Nil);
@@ -411,20 +891,20 @@ impl Vm {
     // ── Frame management ──────────────────────────────────────────────────────
 
     /// Pop the top frame and write return values to the caller.
-    /// Returns `Some(first_val)` if this was the last frame (program done), else `None`.
+    /// Returns `Some(values)` if this was the last frame (program done), else `None`.
     fn return_from_frame(
         &self,
         frames: &mut Vec<CallFrame>,
         vals: Vec<LuaValue>,
         regs: &mut [LuaValue],
         open_upvalues: &mut Vec<(usize, Upvalue)>,
-    ) -> Option<LuaValue> {
+    ) -> Option<Vec<LuaValue>> {
         let frame = frames.pop().unwrap();
         // Close any upvalues that lived in this frame
         close_upvalues_from(open_upvalues, frame.base, regs);
 
         if frames.is_empty() {
-            return Some(vals.into_iter().next().unwrap_or(LuaValue::Nil));
+            return Some(vals);
         }
         // Write return values where the caller expects them
         if let Some(result_base) = frame.result_base {
@@ -502,6 +982,44 @@ impl Default for Vm {
     fn default() -> Self {
         Self::new()
     }
+}
+
+thread_local! {
+    static CURRENT_VM_PTR: Cell<*mut Vm> = const { Cell::new(std::ptr::null_mut()) };
+}
+
+struct VmTlsGuard {
+    prev: *mut Vm,
+}
+
+impl Drop for VmTlsGuard {
+    fn drop(&mut self) {
+        CURRENT_VM_PTR.with(|c| c.set(self.prev));
+    }
+}
+
+impl Vm {
+    fn enter_tls(&mut self) -> VmTlsGuard {
+        let this = self as *mut Vm;
+        let prev = CURRENT_VM_PTR.with(|c| {
+            let p = c.get();
+            c.set(this);
+            p
+        });
+        VmTlsGuard { prev }
+    }
+}
+
+pub(crate) fn with_current_vm<R>(f: impl FnOnce(&mut Vm) -> R) -> Result<R, LuaError> {
+    CURRENT_VM_PTR.with(|c| {
+        let ptr = c.get();
+        if ptr.is_null() {
+            Err(LuaError::Internal("no active vm".into()))
+        } else {
+            // SAFETY: pointer is set only while the VM is actively executing on this thread.
+            Ok(unsafe { f(&mut *ptr) })
+        }
+    })
 }
 
 // ── Close upvalues ────────────────────────────────────────────────────────────
@@ -1105,6 +1623,30 @@ mod tests {
         assert_eq!(
             run("local t = {}; local mt = {}; setmetatable(t, mt); return type(getmetatable(t))"),
             LuaValue::LuaString("table".into()),
+        );
+    }
+
+    #[test]
+    fn coroutine_basic_resume() {
+        assert_eq!(
+            run("local co = coroutine.create(function(a, b) return a + b, a * b end); local ok, s, p = coroutine.resume(co, 3, 4); if not ok then return -1 end; return p"),
+            LuaValue::Integer(12),
+        );
+    }
+
+    #[test]
+    fn coroutine_yield_and_resume() {
+        assert_eq!(
+            run("local co = coroutine.create(function() local x = coroutine.yield(10, 20); return x + 1 end); local ok, a, b = coroutine.resume(co); if not ok then return -1 end; local ok2, r = coroutine.resume(co, 41); if not ok2 then return -2 end; return a + b + r"),
+            LuaValue::Integer(72),
+        );
+    }
+
+    #[test]
+    fn coroutine_status_transitions() {
+        assert_eq!(
+            run("local co = coroutine.create(function() end); local s1 = coroutine.status(co); coroutine.resume(co); local s2 = coroutine.status(co); return s1 .. ':' .. s2"),
+            LuaValue::LuaString("suspended:dead".into()),
         );
     }
 

@@ -17,6 +17,8 @@ pub enum LuaValue {
     Closure(Arc<LuaClosure>),
     /// A Lua table (array + hash parts, reference-counted + interior mutability).
     Table(Arc<RwLock<LuaTable>>),
+    /// A coroutine handle.
+    Thread(u64),
 }
 
 impl LuaValue {
@@ -31,6 +33,7 @@ impl LuaValue {
             LuaValue::NativeFunction(_) => "function",
             LuaValue::Closure(_) => "function",
             LuaValue::Table(_) => "table",
+            LuaValue::Thread(_) => "thread",
         }
     }
 
@@ -64,6 +67,7 @@ impl PartialEq for LuaValue {
             (LuaValue::Closure(a), LuaValue::Closure(b)) => Arc::ptr_eq(a, b),
             // Two tables are equal only if they are the exact same object
             (LuaValue::Table(a), LuaValue::Table(b)) => Arc::ptr_eq(a, b),
+            (LuaValue::Thread(a), LuaValue::Thread(b)) => a == b,
             _ => false,
         }
     }
@@ -80,6 +84,7 @@ impl std::fmt::Debug for LuaValue {
             LuaValue::NativeFunction(_) => write!(f, "LuaValue::NativeFunction(<fn>)"),
             LuaValue::Closure(c) => write!(f, "LuaValue::Closure({:p})", Arc::as_ptr(c)),
             LuaValue::Table(t) => write!(f, "LuaValue::Table({:p})", Arc::as_ptr(t)),
+            LuaValue::Thread(id) => write!(f, "LuaValue::Thread({id})"),
         }
     }
 }
@@ -102,6 +107,7 @@ impl std::fmt::Display for LuaValue {
             LuaValue::NativeFunction(_) => write!(f, "function: 0x<native>"),
             LuaValue::Closure(c) => write!(f, "function: {:p}", Arc::as_ptr(c)),
             LuaValue::Table(t) => write!(f, "table: {:p}", Arc::as_ptr(t)),
+            LuaValue::Thread(id) => write!(f, "thread: 0x{id:x}"),
         }
     }
 }
@@ -134,6 +140,7 @@ mod tests {
         assert_eq!(LuaValue::Float(1.0).type_name(), "number");
         assert_eq!(LuaValue::LuaString("hi".into()).type_name(), "string");
         assert_eq!(LuaValue::new_table().type_name(), "table");
+        assert_eq!(LuaValue::Thread(1).type_name(), "thread");
     }
 
     #[test]

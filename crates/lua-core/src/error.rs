@@ -25,4 +25,8 @@ pub enum LuaError {
     /// Internal implementation bug — should never surface to users.
     #[error("internal error: {0}")]
     Internal(String),
+
+    /// Internal control-flow signal used by coroutine.yield.
+    #[error("yield")]
+    Yield(Vec<crate::value::LuaValue>),
 }

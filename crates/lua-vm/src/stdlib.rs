@@ -25,6 +25,7 @@ pub fn register(globals: &mut HashMap<String, LuaValue>) {
     globals.insert("string".into(), make_string_lib());
     globals.insert("io".into(),     make_io_lib());
     globals.insert("os".into(),     make_os_lib());
+    globals.insert("coroutine".into(), make_coroutine_lib());
 }
 
 // ── Basic functions ─────────────────────────────────────────────────────────
@@ -227,6 +228,51 @@ fn os_date(args: Vec<LuaValue>) -> Result<Vec<LuaValue>, LuaError> {
             .as_secs() as i64,
     };
     Ok(vec![LuaValue::LuaString(format!("{t}"))])
+}
+
+fn make_coroutine_lib() -> LuaValue {
+    let t = Arc::new(RwLock::new(LuaTable::new()));
+    {
+        let mut tbl = t.write().unwrap();
+        tbl.set(LuaValue::LuaString("create".into()), LuaValue::NativeFunction(coroutine_create));
+        tbl.set(LuaValue::LuaString("resume".into()), LuaValue::NativeFunction(coroutine_resume));
+        tbl.set(LuaValue::LuaString("yield".into()), LuaValue::NativeFunction(coroutine_yield));
+        tbl.set(LuaValue::LuaString("status".into()), LuaValue::NativeFunction(coroutine_status));
+        tbl.set(LuaValue::LuaString("running".into()), LuaValue::NativeFunction(coroutine_running));
+    }
+    LuaValue::Table(t)
+}
+
+fn coroutine_create(args: Vec<LuaValue>) -> Result<Vec<LuaValue>, LuaError> {
+    let func = args.into_iter().next().unwrap_or(LuaValue::Nil);
+    crate::vm::with_current_vm(|vm| vm.coroutine_create(func))?
+        .map(|co| vec![co])
+}
+
+fn coroutine_resume(args: Vec<LuaValue>) -> Result<Vec<LuaValue>, LuaError> {
+    let mut it = args.into_iter();
+    let co = it.next().unwrap_or(LuaValue::Nil);
+    let rest: Vec<LuaValue> = it.collect();
+    crate::vm::with_current_vm(|vm| vm.coroutine_resume(co, rest))?
+}
+
+fn coroutine_yield(args: Vec<LuaValue>) -> Result<Vec<LuaValue>, LuaError> {
+    let in_co = crate::vm::with_current_vm(|vm| vm.is_in_coroutine())?;
+    if !in_co {
+        return Err(LuaError::Runtime("attempt to yield from outside a coroutine".into()));
+    }
+    Err(LuaError::Yield(args))
+}
+
+fn coroutine_status(args: Vec<LuaValue>) -> Result<Vec<LuaValue>, LuaError> {
+    let co = args.first().cloned().unwrap_or(LuaValue::Nil);
+    let s = crate::vm::with_current_vm(|vm| vm.coroutine_status(&co))??;
+    Ok(vec![LuaValue::LuaString(s.into())])
+}
+
+fn coroutine_running(_: Vec<LuaValue>) -> Result<Vec<LuaValue>, LuaError> {
+    let (thread, is_main) = crate::vm::with_current_vm(|vm| vm.coroutine_running())?;
+    Ok(vec![thread, LuaValue::Boolean(is_main)])
 }
 
 // ── ipairs / pairs ──────────────────────────────────────────────────────────

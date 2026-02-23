@@ -48,6 +48,7 @@ No system Lua installation required.
 | `io` library (basic: `write`, `flush`) | ✅ |
 | `os` library (basic: `clock`, `time`, `date`) | ✅ |
 | Metatables (basic `getmetatable` / `setmetatable`, table `__index` / `__newindex`) | ✅ |
+| `coroutine` library (basic: `create`, `resume`, `yield`, `status`, `running`) | ✅ |
 | `math` library (`floor`, `ceil`, `abs`, `sqrt`, `max`, `min`, `sin`, `cos`, `tan`, `log`, `exp`, `modf`, `fmod`, `pi`, `huge`, `type`, `tointeger`) | ✅ |
 | `string` library (`sub`, `len`, `upper`, `lower`, `rep`, `reverse`, `byte`, `char`, `find`, `format`) | ✅ |
 | REPL readline: history, arrow keys, Ctrl-R search | ✅ |
@@ -122,4 +123,4 @@ cargo fmt --check
 
 ## Not yet implemented
 
-- `coroutine`
+- Full Lua metatable/function metamethod coverage beyond basic table `__index` / `__newindex`

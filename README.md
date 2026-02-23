@@ -47,7 +47,7 @@ No system Lua installation required.
 | `ipairs`, `pairs`, `select`, `unpack`, `rawget`, `rawset` | ✅ |
 | `io` library (basic: `write`, `flush`) | ✅ |
 | `os` library (basic: `clock`, `time`, `date`) | ✅ |
-| Metatables (basic `getmetatable` / `setmetatable`, table `__index` / `__newindex` / `__call` / `__len`) | ✅ |
+| Metatables (`getmetatable` / `setmetatable`, `__index` / `__newindex` / `__call` / `__len` / `__add` / `__sub` / `__mul` / `__div` / `__mod` / `__pow` / `__eq` / `__lt` / `__le` / `__concat` / `__tostring` / `__pairs` / `__ipairs`) | ✅ |
 | `coroutine` library (basic: `create`, `resume`, `yield`, `status`, `running`) | ✅ |
 | `math` library (`floor`, `ceil`, `abs`, `sqrt`, `max`, `min`, `sin`, `cos`, `tan`, `log`, `exp`, `modf`, `fmod`, `pi`, `huge`, `type`, `tointeger`) | ✅ |
 | `string` library (`sub`, `len`, `upper`, `lower`, `rep`, `reverse`, `byte`, `char`, `find`, `format`) | ✅ |
@@ -111,7 +111,7 @@ lua-rust/
 
 ```sh
 cargo test --workspace
-# 159 tests, 0 failures
+# 172 tests, 0 failures
 ```
 
 ## Linting
@@ -123,6 +123,4 @@ cargo fmt --check
 
 ## Not yet implemented
 
-- Additional metamethods: `__eq`, `__lt`, `__le`, arithmetic (`__add`/`__sub`/`__mul`/`__div`/`__mod`/`__pow`), `__concat`, `__tostring`
-- Iteration/metatable hooks: `__pairs`, `__ipairs`
 - Full Lua metamethod semantics for non-table values

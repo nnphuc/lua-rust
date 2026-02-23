@@ -102,6 +102,10 @@ pub enum OpCode {
         src: u8,
         offset: i16,
     },
+    JumpIfTrue {
+        src: u8,
+        offset: i16,
+    },
 
     // String
     Concat {
@@ -154,5 +158,49 @@ pub enum OpCode {
     /// Close all open upvalues whose stack register is >= `from_reg`.
     CloseUpvalues {
         from_reg: u8,
+    },
+
+    // Tables
+    /// Create a new empty table and store it in `dst`.
+    NewTable {
+        dst: u8,
+    },
+    /// `dst = table[key]`
+    GetTable {
+        dst: u8,
+        table: u8,
+        key: u8,
+    },
+    /// `table[key] = val`
+    SetTable {
+        table: u8,
+        key: u8,
+        val: u8,
+    },
+    /// `dst = table.field`  (field is a string constant in the name table)
+    GetField {
+        dst: u8,
+        table: u8,
+        name_idx: u16,
+    },
+    /// `table.field = val`
+    SetField {
+        table: u8,
+        name_idx: u16,
+        val: u8,
+    },
+    /// `table[array_idx] = val`  (integer key, 1-based; for table constructors)
+    SetList {
+        table: u8,
+        src: u8,  // first source register
+        count: u8, // number of values
+    },
+
+    // Varargs
+    /// Copy `count` varargs into registers starting at `dst`.
+    /// If count == 255, expand all varargs.
+    VarArg {
+        dst: u8,
+        count: u8,
     },
 }

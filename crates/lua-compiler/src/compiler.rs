@@ -52,6 +52,16 @@ impl Frame {
         self.scope_stack.push(self.locals.len());
     }
 
+    /// Peek at the next register index without allocating.
+    fn peek_reg(&self) -> u8 {
+        self.next_reg
+    }
+
+    /// Bind `name` to an already-allocated register (used by generic-for vars).
+    fn bind_at(&mut self, name: &str, reg: u8) {
+        self.locals.push((name.to_owned(), reg));
+    }
+
     /// Pop a scope, return the base register of the first freed local
     /// (used to know which upvalues to close).
     fn pop_scope(&mut self) -> u8 {
@@ -101,6 +111,9 @@ pub struct Compiler {
     parent_locals: Vec<(String, u8)>,
     /// Snapshot of the parent's already-captured upvalues (for upvalue-of-upvalue).
     parent_upvalues: Vec<UpvalEntry>,
+    /// Stack of break-patch lists; one entry per enclosing loop.
+    /// Each entry holds instruction indices that need patching to the loop exit.
+    break_patches: Vec<Vec<usize>>,
 }
 
 impl Compiler {
@@ -111,6 +124,7 @@ impl Compiler {
             upvalues: Vec::new(),
             parent_locals: Vec::new(),
             parent_upvalues: Vec::new(),
+            break_patches: Vec::new(),
         }
     }
 
@@ -121,6 +135,34 @@ impl Compiler {
             upvalues: Vec::new(),
             parent_locals: parent.frame.locals.clone(),
             parent_upvalues: parent.upvalues.clone(),
+            break_patches: Vec::new(),
+        }
+    }
+
+    // ── Loop / break helpers ──────────────────────────────────────────────────
+
+    fn enter_loop(&mut self) {
+        self.break_patches.push(Vec::new());
+    }
+
+    /// Pop the break-patch stack and return the collected indices.
+    fn leave_loop(&mut self) -> Vec<usize> {
+        self.break_patches.pop().unwrap_or_default()
+    }
+
+    fn add_break_patch(&mut self, idx: usize) -> Result<(), LuaError> {
+        if let Some(patches) = self.break_patches.last_mut() {
+            patches.push(idx);
+            Ok(())
+        } else {
+            Err(LuaError::Runtime("<break> outside loop".into()))
+        }
+    }
+
+    fn patch_breaks(&mut self, idxs: Vec<usize>) {
+        let exit = self.proto.instructions.len() as i16;
+        for idx in idxs {
+            self.patch_jump(idx, exit - (idx as i16 + 1));
         }
     }
 
@@ -148,15 +190,28 @@ impl Compiler {
             if ret.values.is_empty() {
                 let r = self.frame.alloc()?;
                 self.proto.emit(OpCode::LoadNil { dst: r });
-                self.proto.emit(OpCode::Return {
-                    src: r,
-                    num_results: 0,
-                });
-            } else {
+                self.proto.emit(OpCode::Return { src: r, num_results: 0 });
+            } else if ret.values.len() == 1 {
                 let r = self.compile_expr(&ret.values[0])?;
+                self.proto.emit(OpCode::Return { src: r, num_results: 1 });
+            } else {
+                // Multi-value return: compile each expression; results should be
+                // in consecutive registers. Track first register explicitly.
+                let first_reg = self.frame.peek_reg();
+                let mut regs = Vec::new();
+                for expr in &ret.values {
+                    regs.push(self.compile_expr(expr)?);
+                }
+                // Ensure all results are consecutive starting at first_reg
+                for (i, &r) in regs.iter().enumerate() {
+                    let target = first_reg + i as u8;
+                    if r != target {
+                        self.proto.emit(OpCode::Move { dst: target, src: r });
+                    }
+                }
                 self.proto.emit(OpCode::Return {
-                    src: r,
-                    num_results: 1,
+                    src: first_reg,
+                    num_results: regs.len() as u8,
                 });
             }
         }
@@ -178,20 +233,72 @@ impl Compiler {
     fn compile_stmt(&mut self, stmt: &Stmt) -> Result<(), LuaError> {
         match stmt {
             Stmt::Local { names, values, .. } => {
-                // Evaluate all RHS into temporaries first, then bind locals
+                // Evaluate all RHS into temporaries first, then bind locals.
+                // Special case: if the last value is a function call, expand it to
+                // produce enough results to fill any remaining name slots.
+                let n_names = names.len();
                 let mut val_regs: Vec<u8> = Vec::new();
-                for val in values {
+
+                for (vi, val) in values.iter().enumerate() {
+                    let is_last = vi == values.len() - 1;
+                    let remaining = n_names.saturating_sub(val_regs.len());
+
+                    // If last value is a call and we need more results, expand it
+                    if is_last && remaining > 1 {
+                        if let Expr::FnCall { func, args, .. } = val {
+                            let func_reg = self.compile_expr_impl(func, None)?;
+                            let num_args = self.compile_call_args(args, func_reg + 1)?;
+                            self.proto.emit(OpCode::Call {
+                                func: func_reg,
+                                num_args,
+                                num_results: remaining as u8,
+                            });
+                            // Results land at func_reg..func_reg+remaining-1.
+                            // Allocate fresh temp registers to hold copies.
+                            // Allocate all targets first, then copy (possibly in reverse
+                            // to avoid overwriting src before it's read).
+                            let mut targets: Vec<u8> = Vec::new();
+                            for _ in 0..remaining {
+                                targets.push(self.frame.alloc()?);
+                            }
+                            // Determine copy order: if target_start > source_start, copy
+                            // backwards to avoid clobbering; otherwise forward.
+                            let src_start = func_reg;
+                            let dst_start = targets[0];
+                            if dst_start <= src_start {
+                                for i in 0..remaining {
+                                    let src = func_reg + i as u8;
+                                    let dst = targets[i];
+                                    if dst != src { self.proto.emit(OpCode::Move { dst, src }); }
+                                    val_regs.push(dst);
+                                }
+                            } else {
+                                // Copy backwards
+                                for i in (0..remaining).rev() {
+                                    let src = func_reg + i as u8;
+                                    let dst = targets[i];
+                                    if dst != src { self.proto.emit(OpCode::Move { dst, src }); }
+                                }
+                                val_regs.extend_from_slice(&targets);
+                            }
+                            break;
+                        }
+                    }
                     val_regs.push(self.compile_expr(val)?);
                 }
+
                 for (i, ln) in names.iter().enumerate() {
                     let dst = self.frame.declare_local(&ln.name)?;
                     if let Some(&src) = val_regs.get(i) {
-                        self.proto.emit(OpCode::Move { dst, src });
+                        if dst != src {
+                            self.proto.emit(OpCode::Move { dst, src });
+                        }
                     } else {
                         self.proto.emit(OpCode::LoadNil { dst });
                     }
                 }
             }
+
 
             Stmt::Assign {
                 targets, values, ..
@@ -201,10 +308,28 @@ impl Compiler {
                     val_regs.push(self.compile_expr(val)?);
                 }
                 for (i, target) in targets.iter().enumerate() {
+                    let src_opt = val_regs.get(i).copied();
                     match target {
                         Expr::Name(name, _) => {
-                            let src_opt = val_regs.get(i).copied();
                             self.assign_name(name, src_opt)?;
+                        }
+                        Expr::Index { table, key, .. } => {
+                            let t = self.compile_expr(table)?;
+                            let k = self.compile_expr(key)?;
+                            let v = if let Some(s) = src_opt { s } else {
+                                let r = self.frame.alloc()?;
+                                self.proto.emit(OpCode::LoadNil { dst: r }); r
+                            };
+                            self.proto.emit(OpCode::SetTable { table: t, key: k, val: v });
+                        }
+                        Expr::Field { table, field, .. } => {
+                            let t = self.compile_expr(table)?;
+                            let v = if let Some(s) = src_opt { s } else {
+                                let r = self.frame.alloc()?;
+                                self.proto.emit(OpCode::LoadNil { dst: r }); r
+                            };
+                            let name_idx = self.proto.add_name(field);
+                            self.proto.emit(OpCode::SetField { table: t, name_idx, val: v });
                         }
                         _ => {
                             return Err(LuaError::Internal(
@@ -224,6 +349,7 @@ impl Compiler {
             }
 
             Stmt::While { cond, body, .. } => {
+                self.enter_loop();
                 let loop_start = self.proto.instructions.len() as i16;
                 let cond_reg = self.compile_expr(cond)?;
                 let jif_idx = self.proto.instructions.len();
@@ -237,6 +363,7 @@ impl Compiler {
                 self.proto.emit(OpCode::Jump { offset: back });
                 let exit = (loop_end as i16 + 1) - (jif_idx as i16 + 1);
                 self.patch_jump(jif_idx, exit);
+                let breaks = self.leave_loop(); self.patch_breaks(breaks);
             }
 
             Stmt::If {
@@ -257,7 +384,9 @@ impl Compiler {
                 body,
                 ..
             } => {
+                self.enter_loop();
                 self.compile_numeric_for(var, start, limit, step.as_ref(), body)?;
+                let breaks = self.leave_loop(); self.patch_breaks(breaks);
             }
 
             // ── Function definitions ──────────────────────────────────────────
@@ -289,13 +418,33 @@ impl Compiler {
             }
 
             Stmt::Break(_) => {
-                return Err(LuaError::Internal("`break` not yet implemented".into()));
+                let jmp_idx = self.proto.instructions.len();
+                self.proto.emit(OpCode::Jump { offset: 0 });
+                self.add_break_patch(jmp_idx)?;
             }
-            Stmt::Repeat { .. } => {
-                return Err(LuaError::Internal("`repeat` not yet implemented".into()));
+            Stmt::Repeat { body, cond, .. } => {
+                self.enter_loop();
+                self.frame.push_scope();
+                let loop_start = self.proto.instructions.len();
+                // Compile body stmts (not via compile_block so that locals are
+                // visible to the condition expression, per Lua 5.4 semantics).
+                for stmt in &body.stmts {
+                    self.compile_stmt(stmt)?;
+                }
+                // NOTE: repeat…until ignores any explicit return in body for now.
+                let cond_reg = self.compile_expr(cond)?;
+                // false condition → jump back, true → fall through
+                let loop_end = self.proto.instructions.len();
+                let back = loop_start as i16 - loop_end as i16 - 1;
+                self.proto.emit(OpCode::JumpIfFalse { src: cond_reg, offset: back });
+                let from_reg = self.frame.pop_scope();
+                if self.has_upvalue_for_reg_range(from_reg) {
+                    self.proto.emit(OpCode::CloseUpvalues { from_reg });
+                }
+                let breaks = self.leave_loop(); self.patch_breaks(breaks);
             }
-            Stmt::GenericFor { .. } => {
-                return Err(LuaError::Internal("generic for not yet implemented".into()));
+            Stmt::GenericFor { vars, iterators, body, .. } => {
+                self.compile_generic_for(vars, iterators, body)?;
             }
             Stmt::Goto { .. } | Stmt::Label { .. } => {
                 return Err(LuaError::Internal("goto/label not yet implemented".into()));
@@ -456,8 +605,123 @@ impl Compiler {
         match &mut self.proto.instructions[idx] {
             OpCode::Jump { offset: o } => *o = offset,
             OpCode::JumpIfFalse { offset: o, .. } => *o = offset,
+            OpCode::JumpIfTrue  { offset: o, .. } => *o = offset,
             _ => {}
         }
+    }
+
+    // ── Generic for ──────────────────────────────────────────────────────────────
+
+    /// Compile `for v1, v2, ... in iter_exprs do body end`.
+    ///
+    /// Register layout per iteration:
+    ///   f_reg     = hidden iterator function (never overwritten by loop vars)
+    ///   s_reg     = hidden state
+    ///   ctrl_reg  = control variable (updated each iteration)
+    ///   call_base = copy of f / results of f(s,ctrl) land here
+    fn compile_generic_for(
+        &mut self,
+        vars: &[String],
+        iterators: &[lua_parser::ast::Expr],
+        body: &Block,
+    ) -> Result<(), LuaError> {
+        self.frame.push_scope(); // outer scope: hidden iter/state/ctrl
+
+        // Compile iterator expressions into 3 consecutive hidden registers: f, s, ctrl.
+        // The common case is a single call like `ipairs(t)` that returns all 3 at once.
+        let f_reg = self.frame.alloc()?;
+        let s_reg = self.frame.alloc()?;
+        let ctrl_reg = self.frame.alloc()?;
+
+        if !iterators.is_empty() {
+            match &iterators[0] {
+                lua_parser::ast::Expr::FnCall { func, args, .. } if iterators.len() == 1 => {
+                    // Single function call: expand it into 3 results directly into f/s/ctrl
+                    let func_reg = self.compile_expr_impl(func, None)?;
+                    let num_args = self.compile_call_args(args, func_reg + 1)?;
+                    self.proto.emit(OpCode::Call { func: func_reg, num_args, num_results: 3 });
+                    // Results land at func_reg, func_reg+1, func_reg+2
+                    // Move into our hidden regs if they don't already align
+                    if func_reg != f_reg {
+                        self.proto.emit(OpCode::Move { dst: f_reg,    src: func_reg });
+                        self.proto.emit(OpCode::Move { dst: s_reg,    src: func_reg + 1 });
+                        self.proto.emit(OpCode::Move { dst: ctrl_reg, src: func_reg + 2 });
+                    }
+                }
+                _ => {
+                    // Multiple explicit iterator expressions
+                    let r0 = self.compile_expr(&iterators[0])?;
+                    if r0 != f_reg { self.proto.emit(OpCode::Move { dst: f_reg, src: r0 }); }
+                    if iterators.len() > 1 {
+                        let r1 = self.compile_expr(&iterators[1])?;
+                        if r1 != s_reg { self.proto.emit(OpCode::Move { dst: s_reg, src: r1 }); }
+                    } else {
+                        self.proto.emit(OpCode::LoadNil { dst: s_reg });
+                    }
+                    if iterators.len() > 2 {
+                        let r2 = self.compile_expr(&iterators[2])?;
+                        if r2 != ctrl_reg { self.proto.emit(OpCode::Move { dst: ctrl_reg, src: r2 }); }
+                    } else {
+                        self.proto.emit(OpCode::LoadNil { dst: ctrl_reg });
+                    }
+                }
+            }
+        } else {
+            self.proto.emit(OpCode::LoadNil { dst: f_reg });
+            self.proto.emit(OpCode::LoadNil { dst: s_reg });
+            self.proto.emit(OpCode::LoadNil { dst: ctrl_reg });
+        }
+
+        self.enter_loop();
+
+        // Allocate 3 registers for the call setup: f-copy, state, ctrl
+        let call_f    = self.frame.alloc()?; // func slot (results land here too)
+        let call_s    = self.frame.alloc()?;
+        let call_ctrl = self.frame.alloc()?;
+
+        let loop_start = self.proto.instructions.len();
+
+        // Set up call area
+        self.proto.emit(OpCode::Move { dst: call_f,    src: f_reg });
+        self.proto.emit(OpCode::Move { dst: call_s,    src: s_reg });
+        self.proto.emit(OpCode::Move { dst: call_ctrl, src: ctrl_reg });
+
+        // Call f(s, ctrl) → vars.len() results starting at call_f
+        let n = vars.len() as u8;
+        self.proto.emit(OpCode::Call { func: call_f, num_args: 2, num_results: n });
+
+        // If first result is nil → exit loop
+        let jif_idx = self.proto.instructions.len();
+        self.proto.emit(OpCode::JumpIfFalse { src: call_f, offset: 0 });
+
+        // Update control variable = first result
+        self.proto.emit(OpCode::Move { dst: ctrl_reg, src: call_f });
+
+        // Bind loop variables as locals in body scope (at call_f .. call_f+n-1)
+        self.frame.push_scope();
+        for (i, var_name) in vars.iter().enumerate() {
+            self.frame.bind_at(var_name, call_f + i as u8);
+        }
+
+        // Compile body
+        for stmt in &body.stmts {
+            self.compile_stmt(stmt)?;
+        }
+        self.frame.pop_scope(); // remove var locals
+
+        // Jump back to loop start
+        let back = loop_start as i16 - self.proto.instructions.len() as i16 - 1;
+        self.proto.emit(OpCode::Jump { offset: back });
+
+        // Patch exit jump
+        let exit = self.proto.instructions.len() as i16;
+        self.patch_jump(jif_idx, exit - (jif_idx as i16 + 1));
+
+        // Patch break jumps
+        let breaks = self.leave_loop(); self.patch_breaks(breaks);
+
+        self.frame.pop_scope(); // remove hidden iter/state/ctrl
+        Ok(())
     }
 
     // ── Function body compilation ─────────────────────────────────────────────
@@ -485,15 +749,26 @@ impl Compiler {
             if ret.values.is_empty() {
                 let r = child.frame.alloc()?;
                 child.proto.emit(OpCode::LoadNil { dst: r });
-                child.proto.emit(OpCode::Return {
-                    src: r,
-                    num_results: 0,
-                });
-            } else {
+                child.proto.emit(OpCode::Return { src: r, num_results: 0 });
+            } else if ret.values.len() == 1 {
                 let r = child.compile_expr_with_parent(&ret.values[0], self)?;
+                child.proto.emit(OpCode::Return { src: r, num_results: 1 });
+            } else {
+                // Multi-value return
+                let first_reg = child.frame.peek_reg();
+                let mut regs = Vec::new();
+                for expr in &ret.values {
+                    regs.push(child.compile_expr_with_parent(expr, self)?);
+                }
+                for (i, &r) in regs.iter().enumerate() {
+                    let target = first_reg + i as u8;
+                    if r != target {
+                        child.proto.emit(OpCode::Move { dst: target, src: r });
+                    }
+                }
                 child.proto.emit(OpCode::Return {
-                    src: r,
-                    num_results: 1,
+                    src: first_reg,
+                    num_results: regs.len() as u8,
                 });
             }
         }
@@ -768,15 +1043,26 @@ impl Compiler {
             if ret.values.is_empty() {
                 let r = self.frame.alloc()?;
                 self.proto.emit(OpCode::LoadNil { dst: r });
-                self.proto.emit(OpCode::Return {
-                    src: r,
-                    num_results: 0,
-                });
-            } else {
+                self.proto.emit(OpCode::Return { src: r, num_results: 0 });
+            } else if ret.values.len() == 1 {
                 let r = self.compile_expr_with_parent(&ret.values[0], parent)?;
+                self.proto.emit(OpCode::Return { src: r, num_results: 1 });
+            } else {
+                // Multi-value return
+                let first_reg = self.frame.peek_reg();
+                let mut regs = Vec::new();
+                for expr in &ret.values {
+                    regs.push(self.compile_expr_with_parent(expr, parent)?);
+                }
+                for (i, &r) in regs.iter().enumerate() {
+                    let target = first_reg + i as u8;
+                    if r != target {
+                        self.proto.emit(OpCode::Move { dst: target, src: r });
+                    }
+                }
                 self.proto.emit(OpCode::Return {
-                    src: r,
-                    num_results: 1,
+                    src: first_reg,
+                    num_results: regs.len() as u8,
                 });
             }
         }
@@ -1082,6 +1368,75 @@ impl Compiler {
                 Ok(func_reg)
             }
 
+            Expr::MethodCall { obj, method, args, .. } => {
+                // obj:method(args) — load obj, get method field, call with obj as first arg
+                let obj_reg = self.compile_expr_impl(obj, None)?;
+                let method_idx = self.proto.add_name(method);
+                let func_reg = self.frame.alloc()?;
+                self.proto.emit(OpCode::GetField { dst: func_reg, table: obj_reg, name_idx: method_idx });
+                // First implicit arg is obj (self)
+                let self_reg = func_reg + 1;
+                self.proto.emit(OpCode::Move { dst: self_reg, src: obj_reg });
+                let extra_args = self.compile_call_args(args, self_reg + 1)?;
+                self.proto.emit(OpCode::Call {
+                    func: func_reg,
+                    num_args: extra_args + 1,
+                    num_results: 1,
+                });
+                Ok(func_reg)
+            }
+
+            Expr::Index { table, key, .. } => {
+                let t = self.compile_expr_impl(table, None)?;
+                let k = self.compile_expr_impl(key, None)?;
+                let dst = self.frame.alloc()?;
+                self.proto.emit(OpCode::GetTable { dst, table: t, key: k });
+                Ok(dst)
+            }
+
+            Expr::Field { table, field, .. } => {
+                let t = self.compile_expr_impl(table, None)?;
+                let name_idx = self.proto.add_name(field);
+                let dst = self.frame.alloc()?;
+                self.proto.emit(OpCode::GetField { dst, table: t, name_idx });
+                Ok(dst)
+            }
+
+            Expr::Table(fields, _) => {
+                let table_reg = self.frame.alloc()?;
+                self.proto.emit(OpCode::NewTable { dst: table_reg });
+                let mut array_idx: i64 = 1;
+                for field in fields {
+                    match field {
+                        lua_parser::ast::Field::Positional(val_expr) => {
+                            let key_reg = self.frame.alloc()?;
+                            let kidx = self.proto.add_constant(LuaValue::Integer(array_idx));
+                            self.proto.emit(OpCode::LoadConst { dst: key_reg, const_idx: kidx });
+                            let val_reg = self.compile_expr(val_expr)?;
+                            self.proto.emit(OpCode::SetTable { table: table_reg, key: key_reg, val: val_reg });
+                            array_idx += 1;
+                        }
+                        lua_parser::ast::Field::Named(name, val_expr) => {
+                            let val_reg = self.compile_expr(val_expr)?;
+                            let name_idx = self.proto.add_name(name);
+                            self.proto.emit(OpCode::SetField { table: table_reg, name_idx, val: val_reg });
+                        }
+                        lua_parser::ast::Field::Index(key_expr, val_expr) => {
+                            let key_reg = self.compile_expr(key_expr)?;
+                            let val_reg = self.compile_expr(val_expr)?;
+                            self.proto.emit(OpCode::SetTable { table: table_reg, key: key_reg, val: val_reg });
+                        }
+                    }
+                }
+                Ok(table_reg)
+            }
+
+            Expr::Vararg(_) => {
+                let dst = self.frame.alloc()?;
+                self.proto.emit(OpCode::VarArg { dst, count: 1 });
+                Ok(dst)
+            }
+
             _ => Err(LuaError::Internal(format!(
                 "expression not yet supported: {:?}",
                 expr
@@ -1261,13 +1616,25 @@ mod tests {
         assert!(opcodes(&chunk).iter().any(|s| s.contains("Closure")));
     }
 
-    // ── Error cases ───────────────────────────────────────────────────────────
+    // ── New feature tests ────────────────────────────────────────────────────
     #[test]
-    fn break_not_yet_supported() {
+    fn break_compiles_in_while() {
         let block = lua_parser::Parser::new("while true do break end")
-            .unwrap()
-            .parse()
-            .unwrap();
+            .unwrap().parse().unwrap();
+        // should compile successfully now
+        assert!(Compiler::new("<test>").compile(&block).is_ok());
+    }
+
+    #[test]
+    fn break_outside_loop_is_error() {
+        let block = lua_parser::Parser::new("break").unwrap().parse().unwrap();
         assert!(Compiler::new("<test>").compile(&block).is_err());
+    }
+
+    #[test]
+    fn repeat_compiles() {
+        let block = lua_parser::Parser::new("repeat local x = 1 until x > 0")
+            .unwrap().parse().unwrap();
+        assert!(Compiler::new("<test>").compile(&block).is_ok());
     }
 }

@@ -5,7 +5,7 @@ A Lua 5.4 runtime implemented in Rust — lexer, parser, bytecode compiler, and 
 ## Quick start
 
 ```sh
-# Interactive REPL
+# Interactive REPL (with readline history, arrow keys, Ctrl-R search)
 cargo run -p lua-repl
 
 # Run a script
@@ -27,41 +27,58 @@ No system Lua installation required.
 | Global variables | ✅ |
 | `if / elseif / else / end` | ✅ |
 | `while` loops | ✅ |
+| `repeat … until` loops | ✅ |
+| `break` inside any loop | ✅ |
 | Numeric `for` loops | ✅ |
+| Generic `for` loops (`for k, v in ipairs(t) do`) | ✅ |
 | `do … end` blocks | ✅ |
 | First-class functions (`function`, anonymous `function() end`) | ✅ |
 | Closures with upvalue capture and mutation | ✅ |
 | Recursion | ✅ |
 | Higher-order functions | ✅ |
-| `print()` built-in | ✅ |
+| Multiple return values (`return a, b, c`) | ✅ |
+| Multiple assignment from function call (`local a, b = f()`) | ✅ |
+| Varargs (`...`) — single-value expansion | ✅ |
+| Tables (`{}`, `t.x`, `t[k]`, `#t`) | ✅ |
+| Table constructors (positional, named, indexed fields) | ✅ |
+| Method calls `obj:method(args)` | ✅ |
+| `print`, `tostring`, `tonumber`, `type`, `assert`, `error` | ✅ |
+| `ipairs`, `pairs`, `select`, `unpack`, `rawget`, `rawset` | ✅ |
+| `math` library (`floor`, `ceil`, `abs`, `sqrt`, `max`, `min`, `sin`, `cos`, `tan`, `log`, `exp`, `modf`, `fmod`, `pi`, `huge`, `type`, `tointeger`) | ✅ |
+| `string` library (`sub`, `len`, `upper`, `lower`, `rep`, `reverse`, `byte`, `char`, `find`, `format`) | ✅ |
+| REPL readline: history, arrow keys, Ctrl-R search | ✅ |
 
 ## Example
 
 ```lua
--- closures
+-- tables + ipairs
+local fruits = {"apple", "banana", "cherry"}
+for i, v in ipairs(fruits) do
+  print(i, v)
+end
+
+-- multiple return values
+local function minmax(t)
+  local lo, hi = t[1], t[1]
+  for _, v in ipairs(t) do
+    if v < lo then lo = v end
+    if v > hi then hi = v end
+  end
+  return lo, hi
+end
+local lo, hi = minmax({3, 1, 4, 1, 5, 9})
+print(lo, hi)   --> 1  9
+
+-- closures + upvalues
 local function make_adder(n)
   return function(x) return x + n end
 end
 local add5 = make_adder(5)
 print(add5(10))   --> 15
 
--- recursion
-local function fib(n)
-  if n <= 1 then return n end
-  return fib(n-1) + fib(n-2)
-end
-print(fib(10))    --> 55
-
--- counter with mutable upvalue
-local function counter()
-  local n = 0
-  return function()
-    n = n + 1
-    return n
-  end
-end
-local c = counter()
-print(c(), c(), c())   --> 1  2  3
+-- math & string stdlib
+print(math.floor(3.7))          --> 3
+print(string.format("pi=%.4f", math.pi))  --> pi=3.1416
 ```
 
 ## Architecture
@@ -69,11 +86,11 @@ print(c(), c(), c())   --> 1  2  3
 ```
 lua-rust/
 ├── crates/
-│   ├── lua-core/       -- LuaValue, LuaError, OpCode, Proto, LuaClosure, Upvalue
+│   ├── lua-core/       -- LuaValue, LuaError, OpCode, LuaTable, Proto, LuaClosure, Upvalue
 │   ├── lua-lexer/      -- hand-written lexer → Token stream
 │   ├── lua-parser/     -- recursive-descent parser → AST
 │   ├── lua-compiler/   -- AST → register-based bytecode (Chunk / Proto)
-│   ├── lua-vm/         -- call-frame-stack VM with upvalue support
+│   ├── lua-vm/         -- call-frame-stack VM with upvalue + table support
 │   └── lua-repl/       -- `lua` binary: interactive REPL + script runner
 ```
 
@@ -83,12 +100,13 @@ lua-rust/
 - **Call-frame stack** — all frames share one flat `Vec<LuaValue>` register file, each frame has a `base` offset
 - **Upvalue cells** — `Arc<RwLock<Open(abs_reg) | Closed(LuaValue)>>` — open while the enclosing frame is alive, migrated to heap on `CloseUpvalues`
 - **Closures** — `Proto` (immutable, `Arc`-shared) + per-instance `Vec<Upvalue>`
+- **Tables** — `Arc<RwLock<LuaTable>>` with compact array part (1-indexed) + hash part; reference equality
 
 ## Running tests
 
 ```sh
 cargo test --workspace
-# 120 tests, 0 failures
+# 141 tests, 0 failures
 ```
 
 ## Linting
@@ -100,10 +118,7 @@ cargo fmt --check
 
 ## Not yet implemented
 
-- Tables and metatables
-- String library (`string.format`, `string.sub`, …)
-- `math` / `io` / `os` libraries
-- Varargs (`...`)
-- Multiple return values
-- `repeat … until`, generic `for`, `goto` / labels
+- Metatables and `__index` / `__newindex` metamethods
+- `io` / `os` libraries
+- `goto` / labels
 - `coroutine`

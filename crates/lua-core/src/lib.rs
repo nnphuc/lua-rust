@@ -9,9 +9,11 @@
 pub mod closure;
 pub mod error;
 pub mod opcode;
+pub mod table;
 pub mod value;
 
 pub use closure::{LuaClosure, Proto, Upvalue, UpvalueDesc, UpvalueInner};
 pub use error::LuaError;
 pub use opcode::OpCode;
+pub use table::LuaTable;
 pub use value::LuaValue;

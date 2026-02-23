@@ -1,6 +1,7 @@
 use crate::closure::LuaClosure;
 use crate::error::LuaError;
-use std::sync::Arc;
+use crate::table::LuaTable;
+use std::sync::{Arc, RwLock};
 
 /// All Lua value types, mirroring the Lua 5.4 type system.
 #[derive(Clone)]
@@ -14,6 +15,8 @@ pub enum LuaValue {
     NativeFunction(fn(Vec<LuaValue>) -> Result<Vec<LuaValue>, LuaError>),
     /// A Lua closure (compiled function + captured upvalues).
     Closure(Arc<LuaClosure>),
+    /// A Lua table (array + hash parts, reference-counted + interior mutability).
+    Table(Arc<RwLock<LuaTable>>),
 }
 
 impl LuaValue {
@@ -27,6 +30,7 @@ impl LuaValue {
             LuaValue::LuaString(_) => "string",
             LuaValue::NativeFunction(_) => "function",
             LuaValue::Closure(_) => "function",
+            LuaValue::Table(_) => "table",
         }
     }
 
@@ -34,6 +38,11 @@ impl LuaValue {
     /// (everything except `nil` and `false` is truthy).
     pub fn is_truthy(&self) -> bool {
         !matches!(self, LuaValue::Nil | LuaValue::Boolean(false))
+    }
+
+    /// Create a new empty table value.
+    pub fn new_table() -> Self {
+        LuaValue::Table(Arc::new(RwLock::new(LuaTable::new())))
     }
 }
 
@@ -53,6 +62,8 @@ impl PartialEq for LuaValue {
             }
             // Two closures are equal only if they are the exact same object
             (LuaValue::Closure(a), LuaValue::Closure(b)) => Arc::ptr_eq(a, b),
+            // Two tables are equal only if they are the exact same object
+            (LuaValue::Table(a), LuaValue::Table(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -68,6 +79,7 @@ impl std::fmt::Debug for LuaValue {
             LuaValue::LuaString(s) => write!(f, "LuaValue::LuaString({s:?})"),
             LuaValue::NativeFunction(_) => write!(f, "LuaValue::NativeFunction(<fn>)"),
             LuaValue::Closure(c) => write!(f, "LuaValue::Closure({:p})", Arc::as_ptr(c)),
+            LuaValue::Table(t) => write!(f, "LuaValue::Table({:p})", Arc::as_ptr(t)),
         }
     }
 }
@@ -78,10 +90,18 @@ impl std::fmt::Display for LuaValue {
             LuaValue::Nil => write!(f, "nil"),
             LuaValue::Boolean(b) => write!(f, "{b}"),
             LuaValue::Integer(n) => write!(f, "{n}"),
-            LuaValue::Float(n) => write!(f, "{n}"),
+            LuaValue::Float(n) => {
+                // Lua displays 1.0 as "1.0", not "1"
+                if n.fract() == 0.0 && n.is_finite() {
+                    write!(f, "{n:.1}")
+                } else {
+                    write!(f, "{n}")
+                }
+            }
             LuaValue::LuaString(s) => write!(f, "{s}"),
             LuaValue::NativeFunction(_) => write!(f, "function: 0x<native>"),
             LuaValue::Closure(c) => write!(f, "function: {:p}", Arc::as_ptr(c)),
+            LuaValue::Table(t) => write!(f, "table: {:p}", Arc::as_ptr(t)),
         }
     }
 }
@@ -113,6 +133,7 @@ mod tests {
         assert_eq!(LuaValue::Integer(1).type_name(), "number");
         assert_eq!(LuaValue::Float(1.0).type_name(), "number");
         assert_eq!(LuaValue::LuaString("hi".into()).type_name(), "string");
+        assert_eq!(LuaValue::new_table().type_name(), "table");
     }
 
     #[test]
@@ -121,5 +142,13 @@ mod tests {
             Ok(vec![])
         }
         assert!(LuaValue::NativeFunction(dummy).is_truthy());
+    }
+
+    #[test]
+    fn table_reference_equality() {
+        let t1 = LuaValue::new_table();
+        let t2 = LuaValue::new_table();
+        assert_eq!(t1, t1.clone()); // same Arc → equal
+        assert_ne!(t1, t2);         // different Arcs → not equal
     }
 }

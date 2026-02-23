@@ -1,7 +1,7 @@
 use lua_compiler::Chunk;
-use lua_core::{LuaClosure, LuaError, LuaValue, OpCode, Proto, Upvalue, UpvalueDesc, UpvalueInner};
+use lua_core::{LuaClosure, LuaError, LuaTable, LuaValue, OpCode, Proto, Upvalue, UpvalueDesc, UpvalueInner};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 // ── Call frame ────────────────────────────────────────────────────────────────
 
@@ -16,6 +16,10 @@ struct CallFrame {
     /// Where in `regs` the caller wants the result (relative to caller's base).
     /// `None` for the top-level frame.
     result_base: Option<usize>,
+    /// How many result registers the caller expects.
+    expected_results: u8,
+    /// Varargs passed to this frame (args beyond `param_count`).
+    varargs: Vec<LuaValue>,
 }
 
 // ── VM ────────────────────────────────────────────────────────────────────────
@@ -54,6 +58,8 @@ impl Vm {
             ip: 0,
             base: 0,
             result_base: None,
+            expected_results: 1,
+            varargs: vec![],
         }];
 
         loop {
@@ -62,9 +68,8 @@ impl Vm {
 
             if frame.ip >= proto.instructions.len() {
                 // Implicit return nil
-                let val = LuaValue::Nil;
                 let _ = frame;
-                match self.return_from_frame(&mut frames, val, &mut regs, &mut open_upvalues) {
+                match self.return_from_frame(&mut frames, vec![LuaValue::Nil], &mut regs, &mut open_upvalues) {
                     Some(final_val) => return Ok(final_val),
                     None => continue,
                 }
@@ -159,6 +164,7 @@ impl Vm {
                 OpCode::Len { dst, src } => {
                     let n = match &reg!(*src).clone() {
                         LuaValue::LuaString(s) => s.len() as i64,
+                        LuaValue::Table(t) => t.read().unwrap().length(),
                         v => {
                             return Err(LuaError::TypeError {
                                 expected: "string or table",
@@ -177,6 +183,13 @@ impl Vm {
                 }
                 OpCode::JumpIfFalse { src, offset } => {
                     if !reg!(*src).is_truthy() {
+                        let new_ip = frame.ip as i64 + *offset as i64;
+                        frames.last_mut().unwrap().ip = new_ip as usize;
+                        continue;
+                    }
+                }
+                OpCode::JumpIfTrue { src, offset } => {
+                    if reg!(*src).is_truthy() {
                         let new_ip = frame.ip as i64 + *offset as i64;
                         frames.last_mut().unwrap().ip = new_ip as usize;
                         continue;
@@ -242,11 +255,9 @@ impl Vm {
                     match func_val {
                         LuaValue::NativeFunction(f) => {
                             let results = f(args)?;
-                            let n_results = (*num_results as usize).min(results.len());
-                            regs[func_abs..func_abs + n_results]
-                                .clone_from_slice(&results[..n_results]);
-                            for i in results.len()..(*num_results as usize) {
-                                regs[func_abs + i] = LuaValue::Nil;
+                            // Write results into func slot onwards
+                            for i in 0..(*num_results as usize) {
+                                regs[func_abs + i] = results.get(i).cloned().unwrap_or(LuaValue::Nil);
                             }
                         }
                         LuaValue::Closure(callee) => {
@@ -257,11 +268,18 @@ impl Vm {
                             for i in args.len()..param_count {
                                 regs[new_base + i] = LuaValue::Nil;
                             }
+                            let varargs = if callee.proto.is_vararg && args.len() > param_count {
+                                args[param_count..].to_vec()
+                            } else {
+                                vec![]
+                            };
                             frames.push(CallFrame {
                                 closure: callee,
                                 ip: 0,
                                 base: new_base,
                                 result_base: Some(func_abs),
+                                expected_results: *num_results,
+                                varargs,
                             });
                             continue;
                         }
@@ -275,14 +293,62 @@ impl Vm {
                 }
 
                 OpCode::Return { src, num_results } => {
-                    let val = if *num_results == 0 {
-                        LuaValue::Nil
+                    // Collect return values from this frame
+                    let n = *num_results as usize;
+                    let vals: Vec<LuaValue> = if n == 0 {
+                        vec![LuaValue::Nil]
                     } else {
-                        reg!(*src).clone()
+                        (0..n).map(|i| regs[base + *src as usize + i].clone()).collect()
                     };
-                    match self.return_from_frame(&mut frames, val, &mut regs, &mut open_upvalues) {
+                    match self.return_from_frame(&mut frames, vals, &mut regs, &mut open_upvalues) {
                         Some(final_val) => return Ok(final_val),
                         None => continue,
+                    }
+                }
+
+                // ── Tables ────────────────────────────────────────────────────
+                OpCode::NewTable { dst } => {
+                    reg!(*dst) = LuaValue::Table(Arc::new(RwLock::new(LuaTable::new())));
+                }
+                OpCode::GetTable { dst, table, key } => {
+                    let val = match &reg!(*table).clone() {
+                        LuaValue::Table(t) => t.read().unwrap().get(&reg!(*key).clone()),
+                        v => return Err(LuaError::TypeError { expected: "table", got: v.type_name() }),
+                    };
+                    reg!(*dst) = val;
+                }
+                OpCode::SetTable { table, key, val } => {
+                    let k = reg!(*key).clone();
+                    let v = reg!(*val).clone();
+                    match reg!(*table).clone() {
+                        LuaValue::Table(t) => t.write().unwrap().set(k, v),
+                        v => return Err(LuaError::TypeError { expected: "table", got: v.type_name() }),
+                    }
+                }
+                OpCode::GetField { dst, table, name_idx } => {
+                    let key = LuaValue::LuaString(proto.names[*name_idx as usize].clone());
+                    let val = match &reg!(*table).clone() {
+                        LuaValue::Table(t) => t.read().unwrap().get(&key),
+                        v => return Err(LuaError::TypeError { expected: "table", got: v.type_name() }),
+                    };
+                    reg!(*dst) = val;
+                }
+                OpCode::SetField { table, name_idx, val } => {
+                    let key = LuaValue::LuaString(proto.names[*name_idx as usize].clone());
+                    let v = reg!(*val).clone();
+                    match reg!(*table).clone() {
+                        LuaValue::Table(t) => t.write().unwrap().set(key, v),
+                        v => return Err(LuaError::TypeError { expected: "table", got: v.type_name() }),
+                    }
+                }
+                OpCode::SetList { .. } => { /* TODO: EmitList not yet used */ }
+
+                // ── Varargs ───────────────────────────────────────────────────
+                OpCode::VarArg { dst, count } => {
+                    let varargs = frames.last().unwrap().varargs.clone();
+                    let n = if *count == 255 { varargs.len() } else { *count as usize };
+                    for i in 0..n {
+                        reg!(*dst + i as u8) = varargs.get(i).cloned().unwrap_or(LuaValue::Nil);
                     }
                 }
 
@@ -298,12 +364,12 @@ impl Vm {
 
     // ── Frame management ──────────────────────────────────────────────────────
 
-    /// Pop the top frame and deliver `val` to the caller.
-    /// Returns `Some(val)` if this was the last frame (program done), else `None`.
+    /// Pop the top frame and write return values to the caller.
+    /// Returns `Some(first_val)` if this was the last frame (program done), else `None`.
     fn return_from_frame(
         &self,
         frames: &mut Vec<CallFrame>,
-        val: LuaValue,
+        vals: Vec<LuaValue>,
         regs: &mut [LuaValue],
         open_upvalues: &mut Vec<(usize, Upvalue)>,
     ) -> Option<LuaValue> {
@@ -312,11 +378,14 @@ impl Vm {
         close_upvalues_from(open_upvalues, frame.base, regs);
 
         if frames.is_empty() {
-            return Some(val);
+            return Some(vals.into_iter().next().unwrap_or(LuaValue::Nil));
         }
-        // Place the return value where the caller expects the result
+        // Write return values where the caller expects them
         if let Some(result_base) = frame.result_base {
-            regs[result_base] = val;
+            let n = frame.expected_results as usize;
+            for i in 0..n {
+                regs[result_base + i] = vals.get(i).cloned().unwrap_or(LuaValue::Nil);
+            }
         }
         None
     }
@@ -826,6 +895,131 @@ mod tests {
         assert_eq!(
             run("local function counter() local n = 0; return function() n = n + 1; return n end end; local c = counter(); c(); c(); return c()"),
             LuaValue::Integer(3),
+        );
+    }
+
+    // ── break ────────────────────────────────────────────────────────────────
+    #[test]
+    fn break_while_loop() {
+        assert_eq!(
+            run("local i = 0; while true do i = i + 1; if i == 3 then break end end; return i"),
+            LuaValue::Integer(3),
+        );
+    }
+
+    #[test]
+    fn break_numeric_for() {
+        assert_eq!(
+            run("local r = 0; for i = 1, 10 do r = i; if i == 5 then break end end; return r"),
+            LuaValue::Integer(5),
+        );
+    }
+
+    // ── repeat…until ─────────────────────────────────────────────────────────
+    #[test]
+    fn repeat_until_basic() {
+        assert_eq!(
+            run("local i = 0; repeat i = i + 1 until i >= 3; return i"),
+            LuaValue::Integer(3),
+        );
+    }
+
+    // ── multiple return values ────────────────────────────────────────────────
+    #[test]
+    fn multi_return_assign() {
+        assert_eq!(
+            run("local function f() return 10, 20, 30 end; local a, b, c = f(); return b"),
+            LuaValue::Integer(20),
+        );
+    }
+
+    // ── tables ────────────────────────────────────────────────────────────────
+    #[test]
+    fn table_positional() {
+        assert_eq!(run("local t = {10, 20, 30}; return t[2]"), LuaValue::Integer(20));
+    }
+
+    #[test]
+    fn table_named_field() {
+        assert_eq!(run("local t = {x = 42}; return t.x"), LuaValue::Integer(42));
+    }
+
+    #[test]
+    fn table_len() {
+        assert_eq!(run("local t = {1, 2, 3}; return #t"), LuaValue::Integer(3));
+    }
+
+    #[test]
+    fn table_set_and_get() {
+        assert_eq!(run("local t = {}; t[1] = 99; return t[1]"), LuaValue::Integer(99));
+    }
+
+    #[test]
+    fn table_field_assign() {
+        assert_eq!(run("local t = {}; t.x = 7; return t.x"), LuaValue::Integer(7));
+    }
+
+    // ── ipairs / generic for ─────────────────────────────────────────────────
+    #[test]
+    fn generic_for_ipairs_sum() {
+        assert_eq!(
+            run("local s = 0; for i, v in ipairs({1, 2, 3}) do s = s + v end; return s"),
+            LuaValue::Integer(6),
+        );
+    }
+
+    // ── varargs ───────────────────────────────────────────────────────────────
+    #[test]
+    fn varargs_basic() {
+        assert_eq!(
+            run("local function sum(a, b, c) return a + b + c end; return sum(1, 2, 3)"),
+            LuaValue::Integer(6),
+        );
+    }
+
+    // ── stdlib: math ─────────────────────────────────────────────────────────
+    #[test]
+    fn math_floor_test() {
+        assert_eq!(run("return math.floor(3.7)"), LuaValue::Integer(3));
+    }
+
+    #[test]
+    fn math_ceil_test() {
+        assert_eq!(run("return math.ceil(3.2)"), LuaValue::Integer(4));
+    }
+
+    #[test]
+    fn math_abs_test() {
+        assert_eq!(run("return math.abs(-5)"), LuaValue::Integer(5));
+    }
+
+    #[test]
+    fn math_max_test() {
+        assert_eq!(run("return math.max(1, 5, 3)"), LuaValue::Integer(5));
+    }
+
+    // ── stdlib: string ───────────────────────────────────────────────────────
+    #[test]
+    fn string_upper_test() {
+        assert_eq!(
+            run(r#"return string.upper("hello")"#),
+            LuaValue::LuaString("HELLO".into()),
+        );
+    }
+
+    #[test]
+    fn string_sub_test() {
+        assert_eq!(
+            run(r#"return string.sub("hello", 2, 4)"#),
+            LuaValue::LuaString("ell".into()),
+        );
+    }
+
+    #[test]
+    fn string_format_test() {
+        assert_eq!(
+            run(r#"return string.format("x=%d", 42)"#),
+            LuaValue::LuaString("x=42".into()),
         );
     }
 }

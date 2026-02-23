@@ -4,6 +4,8 @@ use lua_parser::ast::{BinOp, Block, CallArgs, Expr, FuncBody, Stmt, UnOp};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+const RETURN_CALL_RESULTS: u8 = 8;
+
 // ── Register allocator / scope tracker ───────────────────────────────────────
 
 /// Tracks registers and scopes for a single function body.
@@ -237,8 +239,52 @@ impl Compiler {
                 self.proto.emit(OpCode::LoadNil { dst: r });
                 self.proto.emit(OpCode::Return { src: r, num_results: 0 });
             } else if ret.values.len() == 1 {
-                let r = self.compile_expr(&ret.values[0])?;
-                self.proto.emit(OpCode::Return { src: r, num_results: 1 });
+                match &ret.values[0] {
+                    Expr::FnCall { func, args, .. } => {
+                        let func_reg = self.compile_expr(func)?;
+                        let num_args = self.compile_call_args(args, func_reg + 1)?;
+                        self.proto.emit(OpCode::Call {
+                            func: func_reg,
+                            num_args,
+                            num_results: RETURN_CALL_RESULTS,
+                        });
+                        self.proto.emit(OpCode::Return {
+                            src: func_reg,
+                            num_results: RETURN_CALL_RESULTS,
+                        });
+                    }
+                    Expr::MethodCall {
+                        obj, method, args, ..
+                    } => {
+                        let obj_reg = self.compile_expr(obj)?;
+                        let method_idx = self.proto.add_name(method);
+                        let func_reg = self.frame.alloc()?;
+                        self.proto.emit(OpCode::GetField {
+                            dst: func_reg,
+                            table: obj_reg,
+                            name_idx: method_idx,
+                        });
+                        let self_reg = func_reg + 1;
+                        self.proto.emit(OpCode::Move {
+                            dst: self_reg,
+                            src: obj_reg,
+                        });
+                        let extra_args = self.compile_call_args(args, self_reg + 1)?;
+                        self.proto.emit(OpCode::Call {
+                            func: func_reg,
+                            num_args: extra_args + 1,
+                            num_results: RETURN_CALL_RESULTS,
+                        });
+                        self.proto.emit(OpCode::Return {
+                            src: func_reg,
+                            num_results: RETURN_CALL_RESULTS,
+                        });
+                    }
+                    _ => {
+                        let r = self.compile_expr(&ret.values[0])?;
+                        self.proto.emit(OpCode::Return { src: r, num_results: 1 });
+                    }
+                }
             } else {
                 // Multi-value return: compile each expression; results should be
                 // in consecutive registers. Track first register explicitly.
@@ -840,8 +886,52 @@ impl Compiler {
                 child.proto.emit(OpCode::LoadNil { dst: r });
                 child.proto.emit(OpCode::Return { src: r, num_results: 0 });
             } else if ret.values.len() == 1 {
-                let r = child.compile_expr_with_parent(&ret.values[0], self)?;
-                child.proto.emit(OpCode::Return { src: r, num_results: 1 });
+                match &ret.values[0] {
+                    Expr::FnCall { func, args, .. } => {
+                        let func_reg = child.compile_expr_with_parent(func, self)?;
+                        let num_args = child.compile_call_args(args, func_reg + 1)?;
+                        child.proto.emit(OpCode::Call {
+                            func: func_reg,
+                            num_args,
+                            num_results: RETURN_CALL_RESULTS,
+                        });
+                        child.proto.emit(OpCode::Return {
+                            src: func_reg,
+                            num_results: RETURN_CALL_RESULTS,
+                        });
+                    }
+                    Expr::MethodCall {
+                        obj, method, args, ..
+                    } => {
+                        let obj_reg = child.compile_expr_with_parent(obj, self)?;
+                        let method_idx = child.proto.add_name(method);
+                        let func_reg = child.frame.alloc()?;
+                        child.proto.emit(OpCode::GetField {
+                            dst: func_reg,
+                            table: obj_reg,
+                            name_idx: method_idx,
+                        });
+                        let self_reg = func_reg + 1;
+                        child.proto.emit(OpCode::Move {
+                            dst: self_reg,
+                            src: obj_reg,
+                        });
+                        let extra_args = child.compile_call_args(args, self_reg + 1)?;
+                        child.proto.emit(OpCode::Call {
+                            func: func_reg,
+                            num_args: extra_args + 1,
+                            num_results: RETURN_CALL_RESULTS,
+                        });
+                        child.proto.emit(OpCode::Return {
+                            src: func_reg,
+                            num_results: RETURN_CALL_RESULTS,
+                        });
+                    }
+                    _ => {
+                        let r = child.compile_expr_with_parent(&ret.values[0], self)?;
+                        child.proto.emit(OpCode::Return { src: r, num_results: 1 });
+                    }
+                }
             } else {
                 // Multi-value return
                 let first_reg = child.frame.peek_reg();
@@ -1220,8 +1310,52 @@ impl Compiler {
                 self.proto.emit(OpCode::LoadNil { dst: r });
                 self.proto.emit(OpCode::Return { src: r, num_results: 0 });
             } else if ret.values.len() == 1 {
-                let r = self.compile_expr_with_parent(&ret.values[0], parent)?;
-                self.proto.emit(OpCode::Return { src: r, num_results: 1 });
+                match &ret.values[0] {
+                    Expr::FnCall { func, args, .. } => {
+                        let func_reg = self.compile_expr_with_parent(func, parent)?;
+                        let num_args = self.compile_call_args(args, func_reg + 1)?;
+                        self.proto.emit(OpCode::Call {
+                            func: func_reg,
+                            num_args,
+                            num_results: RETURN_CALL_RESULTS,
+                        });
+                        self.proto.emit(OpCode::Return {
+                            src: func_reg,
+                            num_results: RETURN_CALL_RESULTS,
+                        });
+                    }
+                    Expr::MethodCall {
+                        obj, method, args, ..
+                    } => {
+                        let obj_reg = self.compile_expr_with_parent(obj, parent)?;
+                        let method_idx = self.proto.add_name(method);
+                        let func_reg = self.frame.alloc()?;
+                        self.proto.emit(OpCode::GetField {
+                            dst: func_reg,
+                            table: obj_reg,
+                            name_idx: method_idx,
+                        });
+                        let self_reg = func_reg + 1;
+                        self.proto.emit(OpCode::Move {
+                            dst: self_reg,
+                            src: obj_reg,
+                        });
+                        let extra_args = self.compile_call_args(args, self_reg + 1)?;
+                        self.proto.emit(OpCode::Call {
+                            func: func_reg,
+                            num_args: extra_args + 1,
+                            num_results: RETURN_CALL_RESULTS,
+                        });
+                        self.proto.emit(OpCode::Return {
+                            src: func_reg,
+                            num_results: RETURN_CALL_RESULTS,
+                        });
+                    }
+                    _ => {
+                        let r = self.compile_expr_with_parent(&ret.values[0], parent)?;
+                        self.proto.emit(OpCode::Return { src: r, num_results: 1 });
+                    }
+                }
             } else {
                 // Multi-value return
                 let first_reg = self.frame.peek_reg();

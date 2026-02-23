@@ -36,8 +36,40 @@ fn lua_print(args: Vec<LuaValue>) -> Result<Vec<LuaValue>, LuaError> {
     Ok(vec![])
 }
 
+fn call_callable(callable: LuaValue, args: Vec<LuaValue>) -> Result<Vec<LuaValue>, LuaError> {
+    match callable {
+        LuaValue::NativeFunction(f) => f(args),
+        LuaValue::Closure(c) => {
+            let resumed = crate::vm::with_current_vm(|vm| {
+                let co = vm.coroutine_create(LuaValue::Closure(c.clone()))?;
+                vm.coroutine_resume(co, args)
+            })??;
+            match resumed.first() {
+                Some(LuaValue::Boolean(true)) => Ok(resumed.into_iter().skip(1).collect()),
+                _ => Err(LuaError::Runtime(
+                    resumed.get(1).cloned().unwrap_or(LuaValue::LuaString("metamethod call failed".into())).to_string(),
+                )),
+            }
+        }
+        v => Err(LuaError::TypeError { expected: "function", got: v.type_name() }),
+    }
+}
+
 fn lua_tostring(args: Vec<LuaValue>) -> Result<Vec<LuaValue>, LuaError> {
     let v = args.into_iter().next().unwrap_or(LuaValue::Nil);
+    if let LuaValue::Table(t) = &v {
+        let mm = t
+            .read()
+            .unwrap()
+            .get_metatable()
+            .map(|mt| mt.read().unwrap().get(&LuaValue::LuaString("__tostring".into())))
+            .unwrap_or(LuaValue::Nil);
+        if !matches!(mm, LuaValue::Nil) {
+            let out = call_callable(mm, vec![v.clone()])?;
+            let s = out.into_iter().next().unwrap_or(LuaValue::Nil).to_string();
+            return Ok(vec![LuaValue::LuaString(s)]);
+        }
+    }
     Ok(vec![LuaValue::LuaString(v.to_string())])
 }
 
@@ -282,7 +314,17 @@ fn coroutine_running(_: Vec<LuaValue>) -> Result<Vec<LuaValue>, LuaError> {
 fn lua_ipairs(args: Vec<LuaValue>) -> Result<Vec<LuaValue>, LuaError> {
     let t = args.into_iter().next().unwrap_or(LuaValue::Nil);
     match &t {
-        LuaValue::Table(_) => {}
+        LuaValue::Table(tbl) => {
+            let mm = tbl
+                .read()
+                .unwrap()
+                .get_metatable()
+                .map(|mt| mt.read().unwrap().get(&LuaValue::LuaString("__ipairs".into())))
+                .unwrap_or(LuaValue::Nil);
+            if !matches!(mm, LuaValue::Nil) {
+                return call_callable(mm, vec![t.clone()]);
+            }
+        }
         _ => return Err(LuaError::TypeError { expected: "table", got: t.type_name() }),
     }
     Ok(vec![
@@ -315,7 +357,17 @@ fn ipairs_iter(args: Vec<LuaValue>) -> Result<Vec<LuaValue>, LuaError> {
 fn lua_pairs(args: Vec<LuaValue>) -> Result<Vec<LuaValue>, LuaError> {
     let t = args.into_iter().next().unwrap_or(LuaValue::Nil);
     match &t {
-        LuaValue::Table(_) => {}
+        LuaValue::Table(tbl) => {
+            let mm = tbl
+                .read()
+                .unwrap()
+                .get_metatable()
+                .map(|mt| mt.read().unwrap().get(&LuaValue::LuaString("__pairs".into())))
+                .unwrap_or(LuaValue::Nil);
+            if !matches!(mm, LuaValue::Nil) {
+                return call_callable(mm, vec![t.clone()]);
+            }
+        }
         _ => return Err(LuaError::TypeError { expected: "table", got: t.type_name() }),
     }
     Ok(vec![

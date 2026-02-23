@@ -263,32 +263,260 @@ impl Vm {
 
                 // ── Arithmetic ────────────────────────────────────────────────
                 OpCode::Add { dst, lhs, rhs } => {
-                    let v = arith_add(&reg!(*lhs).clone(), &reg!(*rhs).clone())?;
-                    reg!(*dst) = v;
+                    let lhs_v = reg!(*lhs).clone();
+                    let rhs_v = reg!(*rhs).clone();
+                    match arith_add(&lhs_v, &rhs_v) {
+                        Ok(v) => reg!(*dst) = v,
+                        Err(_) => {
+                            let mm = self.binary_metamethod(&lhs_v, &rhs_v, "__add");
+                            match mm {
+                                LuaValue::Nil => {
+                                    return Err(LuaError::TypeError {
+                                        expected: "number",
+                                        got: lhs_v.type_name(),
+                                    })
+                                }
+                                LuaValue::NativeFunction(f) => {
+                                    let results = f(vec![lhs_v, rhs_v])?;
+                                    reg!(*dst) = results.into_iter().next().unwrap_or(LuaValue::Nil);
+                                }
+                                LuaValue::Closure(callee) => {
+                                    let func_abs = base + *dst as usize;
+                                    regs[func_abs] = lhs_v;
+                                    regs[func_abs + 1] = rhs_v;
+                                    frames.push(CallFrame {
+                                        closure: callee,
+                                        ip: 0,
+                                        base: func_abs,
+                                        result_base: Some(func_abs),
+                                        expected_results: 1,
+                                        varargs: vec![],
+                                    });
+                                    continue;
+                                }
+                                v => {
+                                    return Err(LuaError::TypeError {
+                                        expected: "function",
+                                        got: v.type_name(),
+                                    })
+                                }
+                            }
+                        }
+                    }
                 }
                 OpCode::Sub { dst, lhs, rhs } => {
-                    let v = arith_sub(&reg!(*lhs).clone(), &reg!(*rhs).clone())?;
-                    reg!(*dst) = v;
+                    let lhs_v = reg!(*lhs).clone();
+                    let rhs_v = reg!(*rhs).clone();
+                    match arith_sub(&lhs_v, &rhs_v) {
+                        Ok(v) => reg!(*dst) = v,
+                        Err(_) => {
+                            let mm = self.binary_metamethod(&lhs_v, &rhs_v, "__sub");
+                            match mm {
+                                LuaValue::Nil => {
+                                    return Err(LuaError::TypeError {
+                                        expected: "number",
+                                        got: lhs_v.type_name(),
+                                    })
+                                }
+                                LuaValue::NativeFunction(f) => {
+                                    let results = f(vec![lhs_v, rhs_v])?;
+                                    reg!(*dst) = results.into_iter().next().unwrap_or(LuaValue::Nil);
+                                }
+                                LuaValue::Closure(callee) => {
+                                    let func_abs = base + *dst as usize;
+                                    regs[func_abs] = lhs_v;
+                                    regs[func_abs + 1] = rhs_v;
+                                    frames.push(CallFrame {
+                                        closure: callee,
+                                        ip: 0,
+                                        base: func_abs,
+                                        result_base: Some(func_abs),
+                                        expected_results: 1,
+                                        varargs: vec![],
+                                    });
+                                    continue;
+                                }
+                                v => {
+                                    return Err(LuaError::TypeError {
+                                        expected: "function",
+                                        got: v.type_name(),
+                                    })
+                                }
+                            }
+                        }
+                    }
                 }
                 OpCode::Mul { dst, lhs, rhs } => {
-                    let v = arith_mul(&reg!(*lhs).clone(), &reg!(*rhs).clone())?;
-                    reg!(*dst) = v;
+                    let lhs_v = reg!(*lhs).clone();
+                    let rhs_v = reg!(*rhs).clone();
+                    match arith_mul(&lhs_v, &rhs_v) {
+                        Ok(v) => reg!(*dst) = v,
+                        Err(_) => {
+                            let mm = self.binary_metamethod(&lhs_v, &rhs_v, "__mul");
+                            match mm {
+                                LuaValue::Nil => {
+                                    return Err(LuaError::TypeError {
+                                        expected: "number",
+                                        got: lhs_v.type_name(),
+                                    })
+                                }
+                                LuaValue::NativeFunction(f) => {
+                                    let results = f(vec![lhs_v, rhs_v])?;
+                                    reg!(*dst) = results.into_iter().next().unwrap_or(LuaValue::Nil);
+                                }
+                                LuaValue::Closure(callee) => {
+                                    let func_abs = base + *dst as usize;
+                                    regs[func_abs] = lhs_v;
+                                    regs[func_abs + 1] = rhs_v;
+                                    frames.push(CallFrame {
+                                        closure: callee,
+                                        ip: 0,
+                                        base: func_abs,
+                                        result_base: Some(func_abs),
+                                        expected_results: 1,
+                                        varargs: vec![],
+                                    });
+                                    continue;
+                                }
+                                v => {
+                                    return Err(LuaError::TypeError {
+                                        expected: "function",
+                                        got: v.type_name(),
+                                    })
+                                }
+                            }
+                        }
+                    }
                 }
                 OpCode::Div { dst, lhs, rhs } => {
-                    let v = arith_div(&reg!(*lhs).clone(), &reg!(*rhs).clone())?;
-                    reg!(*dst) = v;
+                    let lhs_v = reg!(*lhs).clone();
+                    let rhs_v = reg!(*rhs).clone();
+                    match arith_div(&lhs_v, &rhs_v) {
+                        Ok(v) => reg!(*dst) = v,
+                        Err(_) => {
+                            let mm = self.binary_metamethod(&lhs_v, &rhs_v, "__div");
+                            match mm {
+                                LuaValue::Nil => {
+                                    return Err(LuaError::TypeError {
+                                        expected: "number",
+                                        got: lhs_v.type_name(),
+                                    })
+                                }
+                                LuaValue::NativeFunction(f) => {
+                                    let results = f(vec![lhs_v, rhs_v])?;
+                                    reg!(*dst) = results.into_iter().next().unwrap_or(LuaValue::Nil);
+                                }
+                                LuaValue::Closure(callee) => {
+                                    let func_abs = base + *dst as usize;
+                                    regs[func_abs] = lhs_v;
+                                    regs[func_abs + 1] = rhs_v;
+                                    frames.push(CallFrame {
+                                        closure: callee,
+                                        ip: 0,
+                                        base: func_abs,
+                                        result_base: Some(func_abs),
+                                        expected_results: 1,
+                                        varargs: vec![],
+                                    });
+                                    continue;
+                                }
+                                v => {
+                                    return Err(LuaError::TypeError {
+                                        expected: "function",
+                                        got: v.type_name(),
+                                    })
+                                }
+                            }
+                        }
+                    }
                 }
                 OpCode::IDiv { dst, lhs, rhs } => {
                     let v = arith_idiv(&reg!(*lhs).clone(), &reg!(*rhs).clone())?;
                     reg!(*dst) = v;
                 }
                 OpCode::Mod { dst, lhs, rhs } => {
-                    let v = arith_mod(&reg!(*lhs).clone(), &reg!(*rhs).clone())?;
-                    reg!(*dst) = v;
+                    let lhs_v = reg!(*lhs).clone();
+                    let rhs_v = reg!(*rhs).clone();
+                    match arith_mod(&lhs_v, &rhs_v) {
+                        Ok(v) => reg!(*dst) = v,
+                        Err(_) => {
+                            let mm = self.binary_metamethod(&lhs_v, &rhs_v, "__mod");
+                            match mm {
+                                LuaValue::Nil => {
+                                    return Err(LuaError::TypeError {
+                                        expected: "number",
+                                        got: lhs_v.type_name(),
+                                    })
+                                }
+                                LuaValue::NativeFunction(f) => {
+                                    let results = f(vec![lhs_v, rhs_v])?;
+                                    reg!(*dst) = results.into_iter().next().unwrap_or(LuaValue::Nil);
+                                }
+                                LuaValue::Closure(callee) => {
+                                    let func_abs = base + *dst as usize;
+                                    regs[func_abs] = lhs_v;
+                                    regs[func_abs + 1] = rhs_v;
+                                    frames.push(CallFrame {
+                                        closure: callee,
+                                        ip: 0,
+                                        base: func_abs,
+                                        result_base: Some(func_abs),
+                                        expected_results: 1,
+                                        varargs: vec![],
+                                    });
+                                    continue;
+                                }
+                                v => {
+                                    return Err(LuaError::TypeError {
+                                        expected: "function",
+                                        got: v.type_name(),
+                                    })
+                                }
+                            }
+                        }
+                    }
                 }
                 OpCode::Pow { dst, lhs, rhs } => {
-                    let v = arith_pow(&reg!(*lhs).clone(), &reg!(*rhs).clone())?;
-                    reg!(*dst) = v;
+                    let lhs_v = reg!(*lhs).clone();
+                    let rhs_v = reg!(*rhs).clone();
+                    match arith_pow(&lhs_v, &rhs_v) {
+                        Ok(v) => reg!(*dst) = v,
+                        Err(_) => {
+                            let mm = self.binary_metamethod(&lhs_v, &rhs_v, "__pow");
+                            match mm {
+                                LuaValue::Nil => {
+                                    return Err(LuaError::TypeError {
+                                        expected: "number",
+                                        got: lhs_v.type_name(),
+                                    })
+                                }
+                                LuaValue::NativeFunction(f) => {
+                                    let results = f(vec![lhs_v, rhs_v])?;
+                                    reg!(*dst) = results.into_iter().next().unwrap_or(LuaValue::Nil);
+                                }
+                                LuaValue::Closure(callee) => {
+                                    let func_abs = base + *dst as usize;
+                                    regs[func_abs] = lhs_v;
+                                    regs[func_abs + 1] = rhs_v;
+                                    frames.push(CallFrame {
+                                        closure: callee,
+                                        ip: 0,
+                                        base: func_abs,
+                                        result_base: Some(func_abs),
+                                        expected_results: 1,
+                                        varargs: vec![],
+                                    });
+                                    continue;
+                                }
+                                v => {
+                                    return Err(LuaError::TypeError {
+                                        expected: "function",
+                                        got: v.type_name(),
+                                    })
+                                }
+                            }
+                        }
+                    }
                 }
                 OpCode::Unm { dst, src } => {
                     let v = arith_unm(&reg!(*src).clone())?;
@@ -297,16 +525,127 @@ impl Vm {
 
                 // ── Comparison ────────────────────────────────────────────────
                 OpCode::Eq { dst, lhs, rhs } => {
-                    let v = cmp_eq(&reg!(*lhs).clone(), &reg!(*rhs).clone());
-                    reg!(*dst) = LuaValue::Boolean(v);
+                    let lhs_v = reg!(*lhs).clone();
+                    let rhs_v = reg!(*rhs).clone();
+                    if cmp_eq(&lhs_v, &rhs_v) {
+                        reg!(*dst) = LuaValue::Boolean(true);
+                    } else {
+                        let mm = self.binary_metamethod(&lhs_v, &rhs_v, "__eq");
+                        match mm {
+                            LuaValue::Nil => reg!(*dst) = LuaValue::Boolean(false),
+                            LuaValue::NativeFunction(f) => {
+                                let results = f(vec![lhs_v, rhs_v])?;
+                                let v = results.into_iter().next().unwrap_or(LuaValue::Nil);
+                                reg!(*dst) = LuaValue::Boolean(v.is_truthy());
+                            }
+                            LuaValue::Closure(callee) => {
+                                let func_abs = base + *dst as usize;
+                                regs[func_abs] = lhs_v;
+                                regs[func_abs + 1] = rhs_v;
+                                frames.push(CallFrame {
+                                    closure: callee,
+                                    ip: 0,
+                                    base: func_abs,
+                                    result_base: Some(func_abs),
+                                    expected_results: 1,
+                                    varargs: vec![],
+                                });
+                                continue;
+                            }
+                            v => {
+                                return Err(LuaError::TypeError {
+                                    expected: "function",
+                                    got: v.type_name(),
+                                })
+                            }
+                        }
+                    }
                 }
                 OpCode::Lt { dst, lhs, rhs } => {
-                    let v = cmp_lt(&reg!(*lhs).clone(), &reg!(*rhs).clone())?;
-                    reg!(*dst) = LuaValue::Boolean(v);
+                    let lhs_v = reg!(*lhs).clone();
+                    let rhs_v = reg!(*rhs).clone();
+                    match cmp_lt(&lhs_v, &rhs_v) {
+                        Ok(v) => reg!(*dst) = LuaValue::Boolean(v),
+                        Err(_) => {
+                            let mm = self.binary_metamethod(&lhs_v, &rhs_v, "__lt");
+                            match mm {
+                                LuaValue::Nil => {
+                                    return Err(LuaError::TypeError {
+                                        expected: "number or string",
+                                        got: lhs_v.type_name(),
+                                    })
+                                }
+                                LuaValue::NativeFunction(f) => {
+                                    let results = f(vec![lhs_v, rhs_v])?;
+                                    let v = results.into_iter().next().unwrap_or(LuaValue::Nil);
+                                    reg!(*dst) = LuaValue::Boolean(v.is_truthy());
+                                }
+                                LuaValue::Closure(callee) => {
+                                    let func_abs = base + *dst as usize;
+                                    regs[func_abs] = lhs_v;
+                                    regs[func_abs + 1] = rhs_v;
+                                    frames.push(CallFrame {
+                                        closure: callee,
+                                        ip: 0,
+                                        base: func_abs,
+                                        result_base: Some(func_abs),
+                                        expected_results: 1,
+                                        varargs: vec![],
+                                    });
+                                    continue;
+                                }
+                                v => {
+                                    return Err(LuaError::TypeError {
+                                        expected: "function",
+                                        got: v.type_name(),
+                                    })
+                                }
+                            }
+                        }
+                    }
                 }
                 OpCode::Le { dst, lhs, rhs } => {
-                    let v = cmp_le(&reg!(*lhs).clone(), &reg!(*rhs).clone())?;
-                    reg!(*dst) = LuaValue::Boolean(v);
+                    let lhs_v = reg!(*lhs).clone();
+                    let rhs_v = reg!(*rhs).clone();
+                    match cmp_le(&lhs_v, &rhs_v) {
+                        Ok(v) => reg!(*dst) = LuaValue::Boolean(v),
+                        Err(_) => {
+                            let mm = self.binary_metamethod(&lhs_v, &rhs_v, "__le");
+                            match mm {
+                                LuaValue::Nil => {
+                                    return Err(LuaError::TypeError {
+                                        expected: "number or string",
+                                        got: lhs_v.type_name(),
+                                    })
+                                }
+                                LuaValue::NativeFunction(f) => {
+                                    let results = f(vec![lhs_v, rhs_v])?;
+                                    let v = results.into_iter().next().unwrap_or(LuaValue::Nil);
+                                    reg!(*dst) = LuaValue::Boolean(v.is_truthy());
+                                }
+                                LuaValue::Closure(callee) => {
+                                    let func_abs = base + *dst as usize;
+                                    regs[func_abs] = lhs_v;
+                                    regs[func_abs + 1] = rhs_v;
+                                    frames.push(CallFrame {
+                                        closure: callee,
+                                        ip: 0,
+                                        base: func_abs,
+                                        result_base: Some(func_abs),
+                                        expected_results: 1,
+                                        varargs: vec![],
+                                    });
+                                    continue;
+                                }
+                                v => {
+                                    return Err(LuaError::TypeError {
+                                        expected: "function",
+                                        got: v.type_name(),
+                                    })
+                                }
+                            }
+                        }
+                    }
                 }
                 OpCode::Not { dst, src } => {
                     let v = !reg!(*src).is_truthy();
@@ -315,22 +654,93 @@ impl Vm {
 
                 // ── String ────────────────────────────────────────────────────
                 OpCode::Concat { dst, start, end } => {
-                    let a = to_string_coerce(&reg!(*start).clone())?;
-                    let b = to_string_coerce(&reg!(*end).clone())?;
-                    reg!(*dst) = LuaValue::LuaString(a + &b);
+                    let lhs_v = reg!(*start).clone();
+                    let rhs_v = reg!(*end).clone();
+                    match (to_string_coerce(&lhs_v), to_string_coerce(&rhs_v)) {
+                        (Ok(a), Ok(b)) => reg!(*dst) = LuaValue::LuaString(a + &b),
+                        _ => {
+                            let mm = self.binary_metamethod(&lhs_v, &rhs_v, "__concat");
+                            match mm {
+                                LuaValue::Nil => {
+                                    return Err(LuaError::TypeError {
+                                        expected: "string or number",
+                                        got: lhs_v.type_name(),
+                                    })
+                                }
+                                LuaValue::NativeFunction(f) => {
+                                    let results = f(vec![lhs_v, rhs_v])?;
+                                    reg!(*dst) = results.into_iter().next().unwrap_or(LuaValue::Nil);
+                                }
+                                LuaValue::Closure(callee) => {
+                                    let func_abs = base + *dst as usize;
+                                    regs[func_abs] = lhs_v;
+                                    regs[func_abs + 1] = rhs_v;
+                                    frames.push(CallFrame {
+                                        closure: callee,
+                                        ip: 0,
+                                        base: func_abs,
+                                        result_base: Some(func_abs),
+                                        expected_results: 1,
+                                        varargs: vec![],
+                                    });
+                                    continue;
+                                }
+                                v => {
+                                    return Err(LuaError::TypeError {
+                                        expected: "function",
+                                        got: v.type_name(),
+                                    })
+                                }
+                            }
+                        }
+                    }
                 }
                 OpCode::Len { dst, src } => {
-                    let n = match &reg!(*src).clone() {
-                        LuaValue::LuaString(s) => s.len() as i64,
-                        LuaValue::Table(t) => t.read().unwrap().length(),
+                    match &reg!(*src).clone() {
+                        LuaValue::LuaString(s) => reg!(*dst) = LuaValue::Integer(s.len() as i64),
+                        LuaValue::Table(t) => {
+                            let mm = t
+                                .read()
+                                .unwrap()
+                                .get_metatable()
+                                .map(|mt| mt.read().unwrap().get(&LuaValue::LuaString("__len".into())))
+                                .unwrap_or(LuaValue::Nil);
+                            match mm {
+                                LuaValue::Nil => {
+                                    reg!(*dst) = LuaValue::Integer(t.read().unwrap().length());
+                                }
+                                LuaValue::NativeFunction(f) => {
+                                    let results = f(vec![LuaValue::Table(t.clone())])?;
+                                    reg!(*dst) = results.into_iter().next().unwrap_or(LuaValue::Nil);
+                                }
+                                LuaValue::Closure(callee) => {
+                                    let func_abs = base + *dst as usize;
+                                    regs[func_abs] = LuaValue::Table(t.clone());
+                                    frames.push(CallFrame {
+                                        closure: callee,
+                                        ip: 0,
+                                        base: func_abs,
+                                        result_base: Some(func_abs),
+                                        expected_results: 1,
+                                        varargs: vec![],
+                                    });
+                                    continue;
+                                }
+                                v => {
+                                    return Err(LuaError::TypeError {
+                                        expected: "function",
+                                        got: v.type_name(),
+                                    })
+                                }
+                            }
+                        }
                         v => {
                             return Err(LuaError::TypeError {
                                 expected: "string or table",
                                 got: v.type_name(),
                             })
                         }
-                    };
-                    reg!(*dst) = LuaValue::Integer(n);
+                    }
                 }
 
                 // ── Control flow ──────────────────────────────────────────────
@@ -440,6 +850,55 @@ impl Vm {
                                 varargs,
                             });
                             continue;
+                        }
+                        LuaValue::Table(t) => {
+                            let mm = t
+                                .read()
+                                .unwrap()
+                                .get_metatable()
+                                .map(|mt| mt.read().unwrap().get(&LuaValue::LuaString("__call".into())))
+                                .unwrap_or(LuaValue::Nil);
+                            let mut call_args = Vec::with_capacity(args.len() + 1);
+                            call_args.push(LuaValue::Table(t.clone()));
+                            call_args.extend(args);
+                            match mm {
+                                LuaValue::NativeFunction(f) => {
+                                    let results = f(call_args)?;
+                                    for i in 0..(*num_results as usize) {
+                                        regs[func_abs + i] =
+                                            results.get(i).cloned().unwrap_or(LuaValue::Nil);
+                                    }
+                                }
+                                LuaValue::Closure(callee) => {
+                                    let new_base = func_abs;
+                                    let param_count = callee.proto.param_count as usize;
+                                    let n = param_count.min(call_args.len());
+                                    regs[new_base..new_base + n].clone_from_slice(&call_args[..n]);
+                                    for i in call_args.len()..param_count {
+                                        regs[new_base + i] = LuaValue::Nil;
+                                    }
+                                    let varargs = if callee.proto.is_vararg && call_args.len() > param_count {
+                                        call_args[param_count..].to_vec()
+                                    } else {
+                                        vec![]
+                                    };
+                                    frames.push(CallFrame {
+                                        closure: callee,
+                                        ip: 0,
+                                        base: new_base,
+                                        result_base: Some(func_abs),
+                                        expected_results: *num_results,
+                                        varargs,
+                                    });
+                                    continue;
+                                }
+                                _ => {
+                                    return Err(LuaError::TypeError {
+                                        expected: "function",
+                                        got: "table",
+                                    })
+                                }
+                            }
                         }
                         other => {
                             return Err(LuaError::TypeError {
@@ -610,60 +1069,366 @@ impl Vm {
                 }
 
                 OpCode::Add { dst, lhs, rhs } => {
-                    reg!(*dst) = arith_add(&reg!(*lhs).clone(), &reg!(*rhs).clone())?;
+                    let lhs_v = reg!(*lhs).clone();
+                    let rhs_v = reg!(*rhs).clone();
+                    match arith_add(&lhs_v, &rhs_v) {
+                        Ok(v) => reg!(*dst) = v,
+                        Err(_) => {
+                            let mm = self.binary_metamethod(&lhs_v, &rhs_v, "__add");
+                            match mm {
+                                LuaValue::Nil => return Err(LuaError::TypeError { expected: "number", got: lhs_v.type_name() }),
+                                LuaValue::NativeFunction(f) => match f(vec![lhs_v, rhs_v]) {
+                                    Ok(results) => reg!(*dst) = results.into_iter().next().unwrap_or(LuaValue::Nil),
+                                    Err(LuaError::Yield(vals)) => {
+                                        state.pending_yield_target = Some((base + *dst as usize, 1));
+                                        return Ok(RunOutcome::Yielded(vals));
+                                    }
+                                    Err(e) => return Err(e),
+                                },
+                                LuaValue::Closure(callee) => {
+                                    let func_abs = base + *dst as usize;
+                                    state.regs[func_abs] = lhs_v;
+                                    state.regs[func_abs + 1] = rhs_v;
+                                    state.frames.push(CallFrame { closure: callee, ip: 0, base: func_abs, result_base: Some(func_abs), expected_results: 1, varargs: vec![] });
+                                    continue;
+                                }
+                                v => return Err(LuaError::TypeError { expected: "function", got: v.type_name() }),
+                            }
+                        }
+                    }
                 }
                 OpCode::Sub { dst, lhs, rhs } => {
-                    reg!(*dst) = arith_sub(&reg!(*lhs).clone(), &reg!(*rhs).clone())?;
+                    let lhs_v = reg!(*lhs).clone();
+                    let rhs_v = reg!(*rhs).clone();
+                    match arith_sub(&lhs_v, &rhs_v) {
+                        Ok(v) => reg!(*dst) = v,
+                        Err(_) => {
+                            let mm = self.binary_metamethod(&lhs_v, &rhs_v, "__sub");
+                            match mm {
+                                LuaValue::Nil => return Err(LuaError::TypeError { expected: "number", got: lhs_v.type_name() }),
+                                LuaValue::NativeFunction(f) => match f(vec![lhs_v, rhs_v]) {
+                                    Ok(results) => reg!(*dst) = results.into_iter().next().unwrap_or(LuaValue::Nil),
+                                    Err(LuaError::Yield(vals)) => {
+                                        state.pending_yield_target = Some((base + *dst as usize, 1));
+                                        return Ok(RunOutcome::Yielded(vals));
+                                    }
+                                    Err(e) => return Err(e),
+                                },
+                                LuaValue::Closure(callee) => {
+                                    let func_abs = base + *dst as usize;
+                                    state.regs[func_abs] = lhs_v;
+                                    state.regs[func_abs + 1] = rhs_v;
+                                    state.frames.push(CallFrame { closure: callee, ip: 0, base: func_abs, result_base: Some(func_abs), expected_results: 1, varargs: vec![] });
+                                    continue;
+                                }
+                                v => return Err(LuaError::TypeError { expected: "function", got: v.type_name() }),
+                            }
+                        }
+                    }
                 }
                 OpCode::Mul { dst, lhs, rhs } => {
-                    reg!(*dst) = arith_mul(&reg!(*lhs).clone(), &reg!(*rhs).clone())?;
+                    let lhs_v = reg!(*lhs).clone();
+                    let rhs_v = reg!(*rhs).clone();
+                    match arith_mul(&lhs_v, &rhs_v) {
+                        Ok(v) => reg!(*dst) = v,
+                        Err(_) => {
+                            let mm = self.binary_metamethod(&lhs_v, &rhs_v, "__mul");
+                            match mm {
+                                LuaValue::Nil => return Err(LuaError::TypeError { expected: "number", got: lhs_v.type_name() }),
+                                LuaValue::NativeFunction(f) => match f(vec![lhs_v, rhs_v]) {
+                                    Ok(results) => reg!(*dst) = results.into_iter().next().unwrap_or(LuaValue::Nil),
+                                    Err(LuaError::Yield(vals)) => {
+                                        state.pending_yield_target = Some((base + *dst as usize, 1));
+                                        return Ok(RunOutcome::Yielded(vals));
+                                    }
+                                    Err(e) => return Err(e),
+                                },
+                                LuaValue::Closure(callee) => {
+                                    let func_abs = base + *dst as usize;
+                                    state.regs[func_abs] = lhs_v;
+                                    state.regs[func_abs + 1] = rhs_v;
+                                    state.frames.push(CallFrame { closure: callee, ip: 0, base: func_abs, result_base: Some(func_abs), expected_results: 1, varargs: vec![] });
+                                    continue;
+                                }
+                                v => return Err(LuaError::TypeError { expected: "function", got: v.type_name() }),
+                            }
+                        }
+                    }
                 }
                 OpCode::Div { dst, lhs, rhs } => {
-                    reg!(*dst) = arith_div(&reg!(*lhs).clone(), &reg!(*rhs).clone())?;
+                    let lhs_v = reg!(*lhs).clone();
+                    let rhs_v = reg!(*rhs).clone();
+                    match arith_div(&lhs_v, &rhs_v) {
+                        Ok(v) => reg!(*dst) = v,
+                        Err(_) => {
+                            let mm = self.binary_metamethod(&lhs_v, &rhs_v, "__div");
+                            match mm {
+                                LuaValue::Nil => return Err(LuaError::TypeError { expected: "number", got: lhs_v.type_name() }),
+                                LuaValue::NativeFunction(f) => match f(vec![lhs_v, rhs_v]) {
+                                    Ok(results) => reg!(*dst) = results.into_iter().next().unwrap_or(LuaValue::Nil),
+                                    Err(LuaError::Yield(vals)) => {
+                                        state.pending_yield_target = Some((base + *dst as usize, 1));
+                                        return Ok(RunOutcome::Yielded(vals));
+                                    }
+                                    Err(e) => return Err(e),
+                                },
+                                LuaValue::Closure(callee) => {
+                                    let func_abs = base + *dst as usize;
+                                    state.regs[func_abs] = lhs_v;
+                                    state.regs[func_abs + 1] = rhs_v;
+                                    state.frames.push(CallFrame { closure: callee, ip: 0, base: func_abs, result_base: Some(func_abs), expected_results: 1, varargs: vec![] });
+                                    continue;
+                                }
+                                v => return Err(LuaError::TypeError { expected: "function", got: v.type_name() }),
+                            }
+                        }
+                    }
                 }
                 OpCode::IDiv { dst, lhs, rhs } => {
                     reg!(*dst) = arith_idiv(&reg!(*lhs).clone(), &reg!(*rhs).clone())?;
                 }
                 OpCode::Mod { dst, lhs, rhs } => {
-                    reg!(*dst) = arith_mod(&reg!(*lhs).clone(), &reg!(*rhs).clone())?;
+                    let lhs_v = reg!(*lhs).clone();
+                    let rhs_v = reg!(*rhs).clone();
+                    match arith_mod(&lhs_v, &rhs_v) {
+                        Ok(v) => reg!(*dst) = v,
+                        Err(_) => {
+                            let mm = self.binary_metamethod(&lhs_v, &rhs_v, "__mod");
+                            match mm {
+                                LuaValue::Nil => return Err(LuaError::TypeError { expected: "number", got: lhs_v.type_name() }),
+                                LuaValue::NativeFunction(f) => match f(vec![lhs_v, rhs_v]) {
+                                    Ok(results) => reg!(*dst) = results.into_iter().next().unwrap_or(LuaValue::Nil),
+                                    Err(LuaError::Yield(vals)) => {
+                                        state.pending_yield_target = Some((base + *dst as usize, 1));
+                                        return Ok(RunOutcome::Yielded(vals));
+                                    }
+                                    Err(e) => return Err(e),
+                                },
+                                LuaValue::Closure(callee) => {
+                                    let func_abs = base + *dst as usize;
+                                    state.regs[func_abs] = lhs_v;
+                                    state.regs[func_abs + 1] = rhs_v;
+                                    state.frames.push(CallFrame { closure: callee, ip: 0, base: func_abs, result_base: Some(func_abs), expected_results: 1, varargs: vec![] });
+                                    continue;
+                                }
+                                v => return Err(LuaError::TypeError { expected: "function", got: v.type_name() }),
+                            }
+                        }
+                    }
                 }
                 OpCode::Pow { dst, lhs, rhs } => {
-                    reg!(*dst) = arith_pow(&reg!(*lhs).clone(), &reg!(*rhs).clone())?;
+                    let lhs_v = reg!(*lhs).clone();
+                    let rhs_v = reg!(*rhs).clone();
+                    match arith_pow(&lhs_v, &rhs_v) {
+                        Ok(v) => reg!(*dst) = v,
+                        Err(_) => {
+                            let mm = self.binary_metamethod(&lhs_v, &rhs_v, "__pow");
+                            match mm {
+                                LuaValue::Nil => return Err(LuaError::TypeError { expected: "number", got: lhs_v.type_name() }),
+                                LuaValue::NativeFunction(f) => match f(vec![lhs_v, rhs_v]) {
+                                    Ok(results) => reg!(*dst) = results.into_iter().next().unwrap_or(LuaValue::Nil),
+                                    Err(LuaError::Yield(vals)) => {
+                                        state.pending_yield_target = Some((base + *dst as usize, 1));
+                                        return Ok(RunOutcome::Yielded(vals));
+                                    }
+                                    Err(e) => return Err(e),
+                                },
+                                LuaValue::Closure(callee) => {
+                                    let func_abs = base + *dst as usize;
+                                    state.regs[func_abs] = lhs_v;
+                                    state.regs[func_abs + 1] = rhs_v;
+                                    state.frames.push(CallFrame { closure: callee, ip: 0, base: func_abs, result_base: Some(func_abs), expected_results: 1, varargs: vec![] });
+                                    continue;
+                                }
+                                v => return Err(LuaError::TypeError { expected: "function", got: v.type_name() }),
+                            }
+                        }
+                    }
                 }
                 OpCode::Unm { dst, src } => {
                     reg!(*dst) = arith_unm(&reg!(*src).clone())?;
                 }
 
                 OpCode::Eq { dst, lhs, rhs } => {
-                    reg!(*dst) = LuaValue::Boolean(cmp_eq(&reg!(*lhs).clone(), &reg!(*rhs).clone()));
+                    let lhs_v = reg!(*lhs).clone();
+                    let rhs_v = reg!(*rhs).clone();
+                    if cmp_eq(&lhs_v, &rhs_v) {
+                        reg!(*dst) = LuaValue::Boolean(true);
+                    } else {
+                        let mm = self.binary_metamethod(&lhs_v, &rhs_v, "__eq");
+                        match mm {
+                            LuaValue::Nil => reg!(*dst) = LuaValue::Boolean(false),
+                            LuaValue::NativeFunction(f) => match f(vec![lhs_v, rhs_v]) {
+                                Ok(results) => {
+                                    let v = results.into_iter().next().unwrap_or(LuaValue::Nil);
+                                    reg!(*dst) = LuaValue::Boolean(v.is_truthy());
+                                }
+                                Err(LuaError::Yield(vals)) => {
+                                    state.pending_yield_target = Some((base + *dst as usize, 1));
+                                    return Ok(RunOutcome::Yielded(vals));
+                                }
+                                Err(e) => return Err(e),
+                            },
+                            LuaValue::Closure(callee) => {
+                                let func_abs = base + *dst as usize;
+                                state.regs[func_abs] = lhs_v;
+                                state.regs[func_abs + 1] = rhs_v;
+                                state.frames.push(CallFrame { closure: callee, ip: 0, base: func_abs, result_base: Some(func_abs), expected_results: 1, varargs: vec![] });
+                                continue;
+                            }
+                            v => return Err(LuaError::TypeError { expected: "function", got: v.type_name() }),
+                        }
+                    }
                 }
                 OpCode::Lt { dst, lhs, rhs } => {
-                    reg!(*dst) = LuaValue::Boolean(cmp_lt(&reg!(*lhs).clone(), &reg!(*rhs).clone())?);
+                    let lhs_v = reg!(*lhs).clone();
+                    let rhs_v = reg!(*rhs).clone();
+                    match cmp_lt(&lhs_v, &rhs_v) {
+                        Ok(v) => reg!(*dst) = LuaValue::Boolean(v),
+                        Err(_) => {
+                            let mm = self.binary_metamethod(&lhs_v, &rhs_v, "__lt");
+                            match mm {
+                                LuaValue::Nil => return Err(LuaError::TypeError { expected: "number or string", got: lhs_v.type_name() }),
+                                LuaValue::NativeFunction(f) => match f(vec![lhs_v, rhs_v]) {
+                                    Ok(results) => {
+                                        let v = results.into_iter().next().unwrap_or(LuaValue::Nil);
+                                        reg!(*dst) = LuaValue::Boolean(v.is_truthy());
+                                    }
+                                    Err(LuaError::Yield(vals)) => {
+                                        state.pending_yield_target = Some((base + *dst as usize, 1));
+                                        return Ok(RunOutcome::Yielded(vals));
+                                    }
+                                    Err(e) => return Err(e),
+                                },
+                                LuaValue::Closure(callee) => {
+                                    let func_abs = base + *dst as usize;
+                                    state.regs[func_abs] = lhs_v;
+                                    state.regs[func_abs + 1] = rhs_v;
+                                    state.frames.push(CallFrame { closure: callee, ip: 0, base: func_abs, result_base: Some(func_abs), expected_results: 1, varargs: vec![] });
+                                    continue;
+                                }
+                                v => return Err(LuaError::TypeError { expected: "function", got: v.type_name() }),
+                            }
+                        }
+                    }
                 }
                 OpCode::Le { dst, lhs, rhs } => {
-                    reg!(*dst) = LuaValue::Boolean(cmp_le(&reg!(*lhs).clone(), &reg!(*rhs).clone())?);
+                    let lhs_v = reg!(*lhs).clone();
+                    let rhs_v = reg!(*rhs).clone();
+                    match cmp_le(&lhs_v, &rhs_v) {
+                        Ok(v) => reg!(*dst) = LuaValue::Boolean(v),
+                        Err(_) => {
+                            let mm = self.binary_metamethod(&lhs_v, &rhs_v, "__le");
+                            match mm {
+                                LuaValue::Nil => return Err(LuaError::TypeError { expected: "number or string", got: lhs_v.type_name() }),
+                                LuaValue::NativeFunction(f) => match f(vec![lhs_v, rhs_v]) {
+                                    Ok(results) => {
+                                        let v = results.into_iter().next().unwrap_or(LuaValue::Nil);
+                                        reg!(*dst) = LuaValue::Boolean(v.is_truthy());
+                                    }
+                                    Err(LuaError::Yield(vals)) => {
+                                        state.pending_yield_target = Some((base + *dst as usize, 1));
+                                        return Ok(RunOutcome::Yielded(vals));
+                                    }
+                                    Err(e) => return Err(e),
+                                },
+                                LuaValue::Closure(callee) => {
+                                    let func_abs = base + *dst as usize;
+                                    state.regs[func_abs] = lhs_v;
+                                    state.regs[func_abs + 1] = rhs_v;
+                                    state.frames.push(CallFrame { closure: callee, ip: 0, base: func_abs, result_base: Some(func_abs), expected_results: 1, varargs: vec![] });
+                                    continue;
+                                }
+                                v => return Err(LuaError::TypeError { expected: "function", got: v.type_name() }),
+                            }
+                        }
+                    }
                 }
                 OpCode::Not { dst, src } => {
                     reg!(*dst) = LuaValue::Boolean(!reg!(*src).is_truthy());
                 }
 
                 OpCode::Concat { dst, start, end } => {
-                    let a = to_string_coerce(&reg!(*start).clone())?;
-                    let b = to_string_coerce(&reg!(*end).clone())?;
-                    reg!(*dst) = LuaValue::LuaString(a + &b);
+                    let lhs_v = reg!(*start).clone();
+                    let rhs_v = reg!(*end).clone();
+                    match (to_string_coerce(&lhs_v), to_string_coerce(&rhs_v)) {
+                        (Ok(a), Ok(b)) => reg!(*dst) = LuaValue::LuaString(a + &b),
+                        _ => {
+                            let mm = self.binary_metamethod(&lhs_v, &rhs_v, "__concat");
+                            match mm {
+                                LuaValue::Nil => return Err(LuaError::TypeError { expected: "string or number", got: lhs_v.type_name() }),
+                                LuaValue::NativeFunction(f) => match f(vec![lhs_v, rhs_v]) {
+                                    Ok(results) => reg!(*dst) = results.into_iter().next().unwrap_or(LuaValue::Nil),
+                                    Err(LuaError::Yield(vals)) => {
+                                        state.pending_yield_target = Some((base + *dst as usize, 1));
+                                        return Ok(RunOutcome::Yielded(vals));
+                                    }
+                                    Err(e) => return Err(e),
+                                },
+                                LuaValue::Closure(callee) => {
+                                    let func_abs = base + *dst as usize;
+                                    state.regs[func_abs] = lhs_v;
+                                    state.regs[func_abs + 1] = rhs_v;
+                                    state.frames.push(CallFrame { closure: callee, ip: 0, base: func_abs, result_base: Some(func_abs), expected_results: 1, varargs: vec![] });
+                                    continue;
+                                }
+                                v => return Err(LuaError::TypeError { expected: "function", got: v.type_name() }),
+                            }
+                        }
+                    }
                 }
                 OpCode::Len { dst, src } => {
-                    let n = match &reg!(*src).clone() {
-                        LuaValue::LuaString(s) => s.len() as i64,
-                        LuaValue::Table(t) => t.read().unwrap().length(),
+                    match &reg!(*src).clone() {
+                        LuaValue::LuaString(s) => reg!(*dst) = LuaValue::Integer(s.len() as i64),
+                        LuaValue::Table(t) => {
+                            let mm = t
+                                .read()
+                                .unwrap()
+                                .get_metatable()
+                                .map(|mt| mt.read().unwrap().get(&LuaValue::LuaString("__len".into())))
+                                .unwrap_or(LuaValue::Nil);
+                            match mm {
+                                LuaValue::Nil => {
+                                    reg!(*dst) = LuaValue::Integer(t.read().unwrap().length());
+                                }
+                                LuaValue::NativeFunction(f) => match f(vec![LuaValue::Table(t.clone())]) {
+                                    Ok(results) => {
+                                        reg!(*dst) = results.into_iter().next().unwrap_or(LuaValue::Nil);
+                                    }
+                                    Err(LuaError::Yield(vals)) => {
+                                        state.pending_yield_target = Some((base + *dst as usize, 1));
+                                        return Ok(RunOutcome::Yielded(vals));
+                                    }
+                                    Err(e) => return Err(e),
+                                },
+                                LuaValue::Closure(callee) => {
+                                    let func_abs = base + *dst as usize;
+                                    state.regs[func_abs] = LuaValue::Table(t.clone());
+                                    state.frames.push(CallFrame {
+                                        closure: callee,
+                                        ip: 0,
+                                        base: func_abs,
+                                        result_base: Some(func_abs),
+                                        expected_results: 1,
+                                        varargs: vec![],
+                                    });
+                                    continue;
+                                }
+                                v => {
+                                    return Err(LuaError::TypeError {
+                                        expected: "function",
+                                        got: v.type_name(),
+                                    })
+                                }
+                            }
+                        }
                         v => {
                             return Err(LuaError::TypeError {
                                 expected: "string or table",
                                 got: v.type_name(),
                             })
                         }
-                    };
-                    reg!(*dst) = LuaValue::Integer(n);
+                    }
                 }
 
                 OpCode::Jump { offset } => {
@@ -763,6 +1528,62 @@ impl Vm {
                             });
                             continue;
                         }
+                        LuaValue::Table(t) => {
+                            let mm = t
+                                .read()
+                                .unwrap()
+                                .get_metatable()
+                                .map(|mt| mt.read().unwrap().get(&LuaValue::LuaString("__call".into())))
+                                .unwrap_or(LuaValue::Nil);
+                            let mut call_args = Vec::with_capacity(args.len() + 1);
+                            call_args.push(LuaValue::Table(t.clone()));
+                            call_args.extend(args);
+                            match mm {
+                                LuaValue::NativeFunction(f) => match f(call_args) {
+                                    Ok(results) => {
+                                        for i in 0..(*num_results as usize) {
+                                            state.regs[func_abs + i] =
+                                                results.get(i).cloned().unwrap_or(LuaValue::Nil);
+                                        }
+                                    }
+                                    Err(LuaError::Yield(vals)) => {
+                                        state.pending_yield_target = Some((func_abs, *num_results));
+                                        return Ok(RunOutcome::Yielded(vals));
+                                    }
+                                    Err(e) => return Err(e),
+                                },
+                                LuaValue::Closure(callee) => {
+                                    let new_base = func_abs;
+                                    let param_count = callee.proto.param_count as usize;
+                                    let n = param_count.min(call_args.len());
+                                    state.regs[new_base..new_base + n]
+                                        .clone_from_slice(&call_args[..n]);
+                                    for i in call_args.len()..param_count {
+                                        state.regs[new_base + i] = LuaValue::Nil;
+                                    }
+                                    let varargs = if callee.proto.is_vararg && call_args.len() > param_count {
+                                        call_args[param_count..].to_vec()
+                                    } else {
+                                        vec![]
+                                    };
+                                    state.frames.push(CallFrame {
+                                        closure: callee,
+                                        ip: 0,
+                                        base: new_base,
+                                        result_base: Some(func_abs),
+                                        expected_results: *num_results,
+                                        varargs,
+                                    });
+                                    continue;
+                                }
+                                _ => {
+                                    return Err(LuaError::TypeError {
+                                        expected: "function",
+                                        got: "table",
+                                    })
+                                }
+                            }
+                        }
                         other => {
                             return Err(LuaError::TypeError {
                                 expected: "function",
@@ -840,6 +1661,26 @@ impl Vm {
                 }
             }
         }
+    }
+
+    fn metamethod_of(&self, v: &LuaValue, name: &str) -> LuaValue {
+        match v {
+            LuaValue::Table(t) => t
+                .read()
+                .unwrap()
+                .get_metatable()
+                .map(|mt| mt.read().unwrap().get(&LuaValue::LuaString(name.into())))
+                .unwrap_or(LuaValue::Nil),
+            _ => LuaValue::Nil,
+        }
+    }
+
+    fn binary_metamethod(&self, lhs: &LuaValue, rhs: &LuaValue, name: &str) -> LuaValue {
+        let mm = self.metamethod_of(lhs, name);
+        if !matches!(mm, LuaValue::Nil) {
+            return mm;
+        }
+        self.metamethod_of(rhs, name)
     }
 
     fn table_get_with_metamethod(
@@ -1624,6 +2465,139 @@ mod tests {
             run("local t = {}; local mt = {}; setmetatable(t, mt); return type(getmetatable(t))"),
             LuaValue::LuaString("table".into()),
         );
+    }
+
+    #[test]
+    fn metatable_call_closure() {
+        assert_eq!(
+            run("local t = {}; setmetatable(t, { __call = function(self, a, b) return a + b end }); return t(2, 3)"),
+            LuaValue::Integer(5),
+        );
+    }
+
+    #[test]
+    fn metatable_call_uses_self() {
+        assert_eq!(
+            run("local t = {base = 10}; setmetatable(t, { __call = function(self, x) return self.base + x end }); return t(5)"),
+            LuaValue::Integer(15),
+        );
+    }
+
+    #[test]
+    fn metatable_len_closure() {
+        assert_eq!(
+            run("local t = {1,2,3}; setmetatable(t, { __len = function(self) return 99 end }); return #t"),
+            LuaValue::Integer(99),
+        );
+    }
+
+    #[test]
+    fn metatable_add_closure() {
+        assert_eq!(
+            run("local a={n=2}; local b={n=5}; setmetatable(a,{__add=function(x,y) return x.n + y.n end}); return a + b"),
+            LuaValue::Integer(7),
+        );
+    }
+
+    #[test]
+    fn metatable_sub_closure() {
+        assert_eq!(
+            run("local a={n=9}; local b={n=4}; setmetatable(a,{__sub=function(x,y) return x.n - y.n end}); return a - b"),
+            LuaValue::Integer(5),
+        );
+    }
+
+    #[test]
+    fn metatable_mul_closure() {
+        assert_eq!(
+            run("local a={n=3}; local b={n=6}; setmetatable(a,{__mul=function(x,y) return x.n * y.n end}); return a * b"),
+            LuaValue::Integer(18),
+        );
+    }
+
+    #[test]
+    fn metatable_div_closure() {
+        assert_eq!(
+            run("local a={n=9}; local b={n=2}; setmetatable(a,{__div=function(x,y) return x.n / y.n end}); return a / b"),
+            LuaValue::Float(4.5),
+        );
+    }
+
+    #[test]
+    fn metatable_mod_closure() {
+        assert_eq!(
+            run("local a={n=17}; local b={n=5}; setmetatable(a,{__mod=function(x,y) return x.n % y.n end}); return a % b"),
+            LuaValue::Integer(2),
+        );
+    }
+
+    #[test]
+    fn metatable_pow_closure() {
+        assert_eq!(
+            run("local a={n=2}; local b={n=5}; setmetatable(a,{__pow=function(x,y) return x.n ^ y.n end}); return a ^ b"),
+            LuaValue::Float(32.0),
+        );
+    }
+
+    #[test]
+    fn metatable_concat_closure() {
+        assert_eq!(
+            run("local a={s='x'}; local b={s='y'}; setmetatable(a,{__concat=function(x,y) return x.s .. y.s end}); return a .. b"),
+            LuaValue::LuaString("xy".into()),
+        );
+    }
+
+    #[test]
+    fn metatable_eq_closure() {
+        assert_eq!(
+            run("local a={id=1}; local b={id=1}; local mt={__eq=function(x,y) return x.id == y.id end}; setmetatable(a,mt); setmetatable(b,mt); return a == b"),
+            LuaValue::Boolean(true),
+        );
+    }
+
+    #[test]
+    fn metatable_lt_closure() {
+        assert_eq!(
+            run("local a={n=1}; local b={n=3}; setmetatable(a,{__lt=function(x,y) return x.n < y.n end}); return a < b"),
+            LuaValue::Boolean(true),
+        );
+    }
+
+    #[test]
+    fn metatable_le_closure() {
+        assert_eq!(
+            run("local a={n=3}; local b={n=3}; setmetatable(a,{__le=function(x,y) return x.n <= y.n end}); return a <= b"),
+            LuaValue::Boolean(true),
+        );
+    }
+
+    #[test]
+    fn metatable_tostring_closure() {
+        assert_eq!(
+            run("local t={}; setmetatable(t,{__tostring=function(_) return 'obj' end}); return tostring(t)"),
+            LuaValue::LuaString("obj".into()),
+        );
+    }
+
+    #[test]
+    fn metatable_pairs_closure() {
+        assert_eq!(
+            run("local t={}; setmetatable(t,{__pairs=function(_) return pairs({k=9}) end}); local s=0; for k,v in pairs(t) do s=s+v end; return s"),
+            LuaValue::Integer(9),
+        );
+    }
+
+    #[test]
+    fn metatable_ipairs_closure() {
+        assert_eq!(
+            run("local t={}; setmetatable(t,{__ipairs=function(_) return ipairs({4,5}) end}); local s=0; for i,v in ipairs(t) do s=s+v end; return s"),
+            LuaValue::Integer(9),
+        );
+    }
+
+    #[test]
+    fn table_len_default_without_metamethod() {
+        assert_eq!(run("local t = {1,2,3}; return #t"), LuaValue::Integer(3));
     }
 
     #[test]

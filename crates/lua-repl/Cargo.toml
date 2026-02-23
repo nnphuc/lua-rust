@@ -10,6 +10,7 @@ name = "lua"
 path = "src/main.rs"
 
 [dependencies]
+rustyline    = { workspace = true }
 lua-core     = { workspace = true }
 lua-parser   = { workspace = true }
 lua-compiler = { workspace = true }

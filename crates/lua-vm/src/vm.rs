@@ -64,6 +64,7 @@ enum RunOutcome {
 /// Register-based virtual machine that executes Lua bytecode.
 pub struct Vm {
     globals: HashMap<String, LuaValue>,
+    type_metatables: HashMap<&'static str, Arc<RwLock<LuaTable>>>,
     coroutines: HashMap<u64, CoroutineState>,
     next_coroutine_id: u64,
     current_coroutine: Option<u64>,
@@ -73,6 +74,7 @@ impl Vm {
     pub fn new() -> Self {
         let mut vm = Vm {
             globals: HashMap::new(),
+            type_metatables: HashMap::new(),
             coroutines: HashMap::new(),
             next_coroutine_id: 1,
             current_coroutine: None,
@@ -127,6 +129,49 @@ impl Vm {
         match self.current_coroutine {
             Some(id) => (LuaValue::Thread(id), false),
             None => (LuaValue::Nil, true),
+        }
+    }
+
+    fn metatable_type_key(v: &LuaValue) -> Option<&'static str> {
+        match v {
+            LuaValue::Nil => Some("nil"),
+            LuaValue::Boolean(_) => Some("boolean"),
+            LuaValue::Integer(_) | LuaValue::Float(_) => Some("number"),
+            LuaValue::LuaString(_) => Some("string"),
+            LuaValue::NativeFunction(_) | LuaValue::Closure(_) => Some("function"),
+            LuaValue::Thread(_) => Some("thread"),
+            LuaValue::Table(_) => None,
+        }
+    }
+
+    pub(crate) fn get_metatable(&self, v: &LuaValue) -> Option<Arc<RwLock<LuaTable>>> {
+        match v {
+            LuaValue::Table(t) => t.read().unwrap().get_metatable(),
+            _ => Self::metatable_type_key(v)
+                .and_then(|k| self.type_metatables.get(k).cloned()),
+        }
+    }
+
+    pub(crate) fn set_metatable(
+        &mut self,
+        v: &LuaValue,
+        mt: Option<Arc<RwLock<LuaTable>>>,
+    ) -> Result<(), LuaError> {
+        match v {
+            LuaValue::Table(t) => {
+                t.write().unwrap().set_metatable(mt);
+                Ok(())
+            }
+            _ => {
+                let key = Self::metatable_type_key(v)
+                    .ok_or_else(|| LuaError::TypeError { expected: "value", got: v.type_name() })?;
+                if let Some(mt) = mt {
+                    self.type_metatables.insert(key, mt);
+                } else {
+                    self.type_metatables.remove(key);
+                }
+                Ok(())
+            }
         }
     }
 
@@ -696,7 +741,8 @@ impl Vm {
                     }
                 }
                 OpCode::Len { dst, src } => {
-                    match &reg!(*src).clone() {
+                    let src_v = reg!(*src).clone();
+                    match &src_v {
                         LuaValue::LuaString(s) => reg!(*dst) = LuaValue::Integer(s.len() as i64),
                         LuaValue::Table(t) => {
                             let mm = t
@@ -735,10 +781,38 @@ impl Vm {
                             }
                         }
                         v => {
-                            return Err(LuaError::TypeError {
-                                expected: "string or table",
-                                got: v.type_name(),
-                            })
+                            let mm = self.metamethod_of(v, "__len");
+                            match mm {
+                                LuaValue::Nil => {
+                                    return Err(LuaError::TypeError {
+                                        expected: "string or table",
+                                        got: v.type_name(),
+                                    })
+                                }
+                                LuaValue::NativeFunction(f) => {
+                                    let results = f(vec![src_v.clone()])?;
+                                    reg!(*dst) = results.into_iter().next().unwrap_or(LuaValue::Nil);
+                                }
+                                LuaValue::Closure(callee) => {
+                                    let func_abs = base + *dst as usize;
+                                    regs[func_abs] = src_v.clone();
+                                    frames.push(CallFrame {
+                                        closure: callee,
+                                        ip: 0,
+                                        base: func_abs,
+                                        result_base: Some(func_abs),
+                                        expected_results: 1,
+                                        varargs: vec![],
+                                    });
+                                    continue;
+                                }
+                                mv => {
+                                    return Err(LuaError::TypeError {
+                                        expected: "function",
+                                        got: mv.type_name(),
+                                    })
+                                }
+                            }
                         }
                     }
                 }
@@ -851,15 +925,10 @@ impl Vm {
                             });
                             continue;
                         }
-                        LuaValue::Table(t) => {
-                            let mm = t
-                                .read()
-                                .unwrap()
-                                .get_metatable()
-                                .map(|mt| mt.read().unwrap().get(&LuaValue::LuaString("__call".into())))
-                                .unwrap_or(LuaValue::Nil);
+                        other => {
+                            let mm = self.metamethod_of(&other, "__call");
                             let mut call_args = Vec::with_capacity(args.len() + 1);
-                            call_args.push(LuaValue::Table(t.clone()));
+                            call_args.push(other.clone());
                             call_args.extend(args);
                             match mm {
                                 LuaValue::NativeFunction(f) => {
@@ -895,16 +964,10 @@ impl Vm {
                                 _ => {
                                     return Err(LuaError::TypeError {
                                         expected: "function",
-                                        got: "table",
+                                        got: other.type_name(),
                                     })
                                 }
                             }
-                        }
-                        other => {
-                            return Err(LuaError::TypeError {
-                                expected: "function",
-                                got: other.type_name(),
-                            })
                         }
                     }
                 }
@@ -1378,7 +1441,8 @@ impl Vm {
                     }
                 }
                 OpCode::Len { dst, src } => {
-                    match &reg!(*src).clone() {
+                    let src_v = reg!(*src).clone();
+                    match &src_v {
                         LuaValue::LuaString(s) => reg!(*dst) = LuaValue::Integer(s.len() as i64),
                         LuaValue::Table(t) => {
                             let mm = t
@@ -1423,10 +1487,44 @@ impl Vm {
                             }
                         }
                         v => {
-                            return Err(LuaError::TypeError {
-                                expected: "string or table",
-                                got: v.type_name(),
-                            })
+                            let mm = self.metamethod_of(v, "__len");
+                            match mm {
+                                LuaValue::Nil => {
+                                    return Err(LuaError::TypeError {
+                                        expected: "string or table",
+                                        got: v.type_name(),
+                                    })
+                                }
+                                LuaValue::NativeFunction(f) => match f(vec![src_v.clone()]) {
+                                    Ok(results) => {
+                                        reg!(*dst) = results.into_iter().next().unwrap_or(LuaValue::Nil);
+                                    }
+                                    Err(LuaError::Yield(vals)) => {
+                                        state.pending_yield_target = Some((base + *dst as usize, 1));
+                                        return Ok(RunOutcome::Yielded(vals));
+                                    }
+                                    Err(e) => return Err(e),
+                                },
+                                LuaValue::Closure(callee) => {
+                                    let func_abs = base + *dst as usize;
+                                    state.regs[func_abs] = src_v.clone();
+                                    state.frames.push(CallFrame {
+                                        closure: callee,
+                                        ip: 0,
+                                        base: func_abs,
+                                        result_base: Some(func_abs),
+                                        expected_results: 1,
+                                        varargs: vec![],
+                                    });
+                                    continue;
+                                }
+                                mv => {
+                                    return Err(LuaError::TypeError {
+                                        expected: "function",
+                                        got: mv.type_name(),
+                                    })
+                                }
+                            }
                         }
                     }
                 }
@@ -1528,15 +1626,10 @@ impl Vm {
                             });
                             continue;
                         }
-                        LuaValue::Table(t) => {
-                            let mm = t
-                                .read()
-                                .unwrap()
-                                .get_metatable()
-                                .map(|mt| mt.read().unwrap().get(&LuaValue::LuaString("__call".into())))
-                                .unwrap_or(LuaValue::Nil);
+                        other => {
+                            let mm = self.metamethod_of(&other, "__call");
                             let mut call_args = Vec::with_capacity(args.len() + 1);
-                            call_args.push(LuaValue::Table(t.clone()));
+                            call_args.push(other.clone());
                             call_args.extend(args);
                             match mm {
                                 LuaValue::NativeFunction(f) => match f(call_args) {
@@ -1579,16 +1672,10 @@ impl Vm {
                                 _ => {
                                     return Err(LuaError::TypeError {
                                         expected: "function",
-                                        got: "table",
+                                        got: other.type_name(),
                                     })
                                 }
                             }
-                        }
-                        other => {
-                            return Err(LuaError::TypeError {
-                                expected: "function",
-                                got: other.type_name(),
-                            })
                         }
                     }
                 }
@@ -1664,15 +1751,10 @@ impl Vm {
     }
 
     fn metamethod_of(&self, v: &LuaValue, name: &str) -> LuaValue {
-        match v {
-            LuaValue::Table(t) => t
-                .read()
-                .unwrap()
-                .get_metatable()
-                .map(|mt| mt.read().unwrap().get(&LuaValue::LuaString(name.into())))
-                .unwrap_or(LuaValue::Nil),
-            _ => LuaValue::Nil,
-        }
+        self
+            .get_metatable(v)
+            .map(|mt| mt.read().unwrap().get(&LuaValue::LuaString(name.into())))
+            .unwrap_or(LuaValue::Nil)
     }
 
     fn binary_metamethod(&self, lhs: &LuaValue, rhs: &LuaValue, name: &str) -> LuaValue {
@@ -2592,6 +2674,38 @@ mod tests {
         assert_eq!(
             run("local t={}; setmetatable(t,{__ipairs=function(_) return ipairs({4,5}) end}); local s=0; for i,v in ipairs(t) do s=s+v end; return s"),
             LuaValue::Integer(9),
+        );
+    }
+
+    #[test]
+    fn non_table_string_add_metamethod() {
+        assert_eq!(
+            run("setmetatable('', {__add=function(a,b) return tostring(a) .. tostring(b) end}); return 'x' + 'y'"),
+            LuaValue::LuaString("xy".into()),
+        );
+    }
+
+    #[test]
+    fn non_table_string_call_metamethod() {
+        assert_eq!(
+            run("setmetatable('', {__call=function(self, x) return x + 1 end}); local s='hello'; return s(41)"),
+            LuaValue::Integer(42),
+        );
+    }
+
+    #[test]
+    fn non_table_boolean_len_metamethod() {
+        assert_eq!(
+            run("setmetatable(true, {__len=function(_) return 7 end}); return #true"),
+            LuaValue::Integer(7),
+        );
+    }
+
+    #[test]
+    fn non_table_getmetatable() {
+        assert_eq!(
+            run("setmetatable('', {tag='strmt'}); return getmetatable('x').tag"),
+            LuaValue::LuaString("strmt".into()),
         );
     }
 

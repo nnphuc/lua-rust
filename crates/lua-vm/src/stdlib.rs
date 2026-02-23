@@ -57,18 +57,15 @@ fn call_callable(callable: LuaValue, args: Vec<LuaValue>) -> Result<Vec<LuaValue
 
 fn lua_tostring(args: Vec<LuaValue>) -> Result<Vec<LuaValue>, LuaError> {
     let v = args.into_iter().next().unwrap_or(LuaValue::Nil);
-    if let LuaValue::Table(t) = &v {
-        let mm = t
-            .read()
-            .unwrap()
-            .get_metatable()
+    let mm = crate::vm::with_current_vm(|vm| {
+        vm.get_metatable(&v)
             .map(|mt| mt.read().unwrap().get(&LuaValue::LuaString("__tostring".into())))
-            .unwrap_or(LuaValue::Nil);
-        if !matches!(mm, LuaValue::Nil) {
-            let out = call_callable(mm, vec![v.clone()])?;
-            let s = out.into_iter().next().unwrap_or(LuaValue::Nil).to_string();
-            return Ok(vec![LuaValue::LuaString(s)]);
-        }
+            .unwrap_or(LuaValue::Nil)
+    })?;
+    if !matches!(mm, LuaValue::Nil) {
+        let out = call_callable(mm, vec![v.clone()])?;
+        let s = out.into_iter().next().unwrap_or(LuaValue::Nil).to_string();
+        return Ok(vec![LuaValue::LuaString(s)]);
     }
     Ok(vec![LuaValue::LuaString(v.to_string())])
 }
@@ -169,30 +166,22 @@ fn lua_rawset(args: Vec<LuaValue>) -> Result<Vec<LuaValue>, LuaError> {
 }
 
 fn lua_getmetatable(args: Vec<LuaValue>) -> Result<Vec<LuaValue>, LuaError> {
-    match args.into_iter().next().unwrap_or(LuaValue::Nil) {
-        LuaValue::Table(t) => {
-            let mt = t.read().unwrap().get_metatable();
-            Ok(vec![mt.map(LuaValue::Table).unwrap_or(LuaValue::Nil)])
-        }
-        v => Err(LuaError::TypeError { expected: "table", got: v.type_name() }),
-    }
+    let v = args.into_iter().next().unwrap_or(LuaValue::Nil);
+    let mt = crate::vm::with_current_vm(|vm| vm.get_metatable(&v))?;
+    Ok(vec![mt.map(LuaValue::Table).unwrap_or(LuaValue::Nil)])
 }
 
 fn lua_setmetatable(args: Vec<LuaValue>) -> Result<Vec<LuaValue>, LuaError> {
     let mut it = args.into_iter();
-    let t = it.next().unwrap_or(LuaValue::Nil);
+    let value = it.next().unwrap_or(LuaValue::Nil);
     let mt = it.next().unwrap_or(LuaValue::Nil);
-    let table = match &t {
-        LuaValue::Table(tbl) => tbl.clone(),
-        v => return Err(LuaError::TypeError { expected: "table", got: v.type_name() }),
-    };
     let new_mt = match mt {
         LuaValue::Nil => None,
         LuaValue::Table(mt) => Some(mt),
         v => return Err(LuaError::TypeError { expected: "table", got: v.type_name() }),
     };
-    table.write().unwrap().set_metatable(new_mt);
-    Ok(vec![t])
+    crate::vm::with_current_vm(|vm| vm.set_metatable(&value, new_mt))??;
+    Ok(vec![value])
 }
 
 // ── io / os libraries ──────────────────────────────────────────────────────

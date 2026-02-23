@@ -47,7 +47,7 @@ No system Lua installation required.
 | `ipairs`, `pairs`, `select`, `unpack`, `rawget`, `rawset` | ✅ |
 | `io` library (basic: `write`, `flush`) | ✅ |
 | `os` library (basic: `clock`, `time`, `date`) | ✅ |
-| Metatables (`getmetatable` / `setmetatable`, `__index` / `__newindex` / `__call` / `__len` / `__add` / `__sub` / `__mul` / `__div` / `__mod` / `__pow` / `__eq` / `__lt` / `__le` / `__concat` / `__tostring` / `__pairs` / `__ipairs`) | ✅ |
+| Metatables (`getmetatable` / `setmetatable`, `__index` / `__newindex` / `__call` / `__len` / `__add` / `__sub` / `__mul` / `__div` / `__mod` / `__pow` / `__eq` / `__lt` / `__le` / `__concat` / `__tostring` / `__pairs` / `__ipairs`, including non-table type metatables) | ✅ |
 | `coroutine` library (basic: `create`, `resume`, `yield`, `status`, `running`) | ✅ |
 | `math` library (`floor`, `ceil`, `abs`, `sqrt`, `max`, `min`, `sin`, `cos`, `tan`, `log`, `exp`, `modf`, `fmod`, `pi`, `huge`, `type`, `tointeger`) | ✅ |
 | `string` library (`sub`, `len`, `upper`, `lower`, `rep`, `reverse`, `byte`, `char`, `find`, `format`) | ✅ |
@@ -111,7 +111,7 @@ lua-rust/
 
 ```sh
 cargo test --workspace
-# 172 tests, 0 failures
+# 176 tests, 0 failures
 ```
 
 ## Linting
@@ -123,4 +123,4 @@ cargo fmt --check
 
 ## Not yet implemented
 
-- Full Lua metamethod semantics for non-table values
+- Full Lua compatibility edge-cases (metamethod rules, coercions, and stdlib parity)

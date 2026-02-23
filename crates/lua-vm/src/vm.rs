@@ -175,6 +175,30 @@ impl Vm {
         }
     }
 
+    fn call_metamethod(&mut self, callable: LuaValue, args: Vec<LuaValue>) -> Result<Vec<LuaValue>, LuaError> {
+        match callable {
+            LuaValue::NativeFunction(f) => f(args),
+            LuaValue::Closure(c) => {
+                let co = self.coroutine_create(LuaValue::Closure(c))?;
+                let resumed = self.coroutine_resume(co, args)?;
+                match resumed.first() {
+                    Some(LuaValue::Boolean(true)) => Ok(resumed.into_iter().skip(1).collect()),
+                    _ => Err(LuaError::Runtime(
+                        resumed
+                            .get(1)
+                            .cloned()
+                            .unwrap_or(LuaValue::LuaString("metamethod call failed".into()))
+                            .to_string(),
+                    )),
+                }
+            }
+            v => Err(LuaError::TypeError {
+                expected: "function",
+                got: v.type_name(),
+            }),
+        }
+    }
+
     pub(crate) fn coroutine_resume(
         &mut self,
         co: LuaValue,
@@ -655,7 +679,12 @@ impl Vm {
                     match cmp_le(&lhs_v, &rhs_v) {
                         Ok(v) => reg!(*dst) = LuaValue::Boolean(v),
                         Err(_) => {
-                            let mm = self.binary_metamethod(&lhs_v, &rhs_v, "__le");
+                            let mut mm = self.binary_metamethod(&lhs_v, &rhs_v, "__le");
+                            let mut fallback_lt = false;
+                            if matches!(mm, LuaValue::Nil) {
+                                mm = self.binary_metamethod(&rhs_v, &lhs_v, "__lt");
+                                fallback_lt = !matches!(mm, LuaValue::Nil);
+                            }
                             match mm {
                                 LuaValue::Nil => {
                                     return Err(LuaError::TypeError {
@@ -663,24 +692,15 @@ impl Vm {
                                         got: lhs_v.type_name(),
                                     })
                                 }
-                                LuaValue::NativeFunction(f) => {
-                                    let results = f(vec![lhs_v, rhs_v])?;
+                                LuaValue::NativeFunction(_) | LuaValue::Closure(_) => {
+                                    let args = if fallback_lt {
+                                        vec![rhs_v, lhs_v]
+                                    } else {
+                                        vec![lhs_v, rhs_v]
+                                    };
+                                    let results = self.call_metamethod(mm, args)?;
                                     let v = results.into_iter().next().unwrap_or(LuaValue::Nil);
-                                    reg!(*dst) = LuaValue::Boolean(v.is_truthy());
-                                }
-                                LuaValue::Closure(callee) => {
-                                    let func_abs = base + *dst as usize;
-                                    regs[func_abs] = lhs_v;
-                                    regs[func_abs + 1] = rhs_v;
-                                    frames.push(CallFrame {
-                                        closure: callee,
-                                        ip: 0,
-                                        base: func_abs,
-                                        result_base: Some(func_abs),
-                                        expected_results: 1,
-                                        varargs: vec![],
-                                    });
-                                    continue;
+                                    reg!(*dst) = LuaValue::Boolean(if fallback_lt { !v.is_truthy() } else { v.is_truthy() });
                                 }
                                 v => {
                                     return Err(LuaError::TypeError {
@@ -1381,26 +1401,23 @@ impl Vm {
                     match cmp_le(&lhs_v, &rhs_v) {
                         Ok(v) => reg!(*dst) = LuaValue::Boolean(v),
                         Err(_) => {
-                            let mm = self.binary_metamethod(&lhs_v, &rhs_v, "__le");
+                            let mut mm = self.binary_metamethod(&lhs_v, &rhs_v, "__le");
+                            let mut fallback_lt = false;
+                            if matches!(mm, LuaValue::Nil) {
+                                mm = self.binary_metamethod(&rhs_v, &lhs_v, "__lt");
+                                fallback_lt = !matches!(mm, LuaValue::Nil);
+                            }
                             match mm {
                                 LuaValue::Nil => return Err(LuaError::TypeError { expected: "number or string", got: lhs_v.type_name() }),
-                                LuaValue::NativeFunction(f) => match f(vec![lhs_v, rhs_v]) {
-                                    Ok(results) => {
-                                        let v = results.into_iter().next().unwrap_or(LuaValue::Nil);
-                                        reg!(*dst) = LuaValue::Boolean(v.is_truthy());
-                                    }
-                                    Err(LuaError::Yield(vals)) => {
-                                        state.pending_yield_target = Some((base + *dst as usize, 1));
-                                        return Ok(RunOutcome::Yielded(vals));
-                                    }
-                                    Err(e) => return Err(e),
-                                },
-                                LuaValue::Closure(callee) => {
-                                    let func_abs = base + *dst as usize;
-                                    state.regs[func_abs] = lhs_v;
-                                    state.regs[func_abs + 1] = rhs_v;
-                                    state.frames.push(CallFrame { closure: callee, ip: 0, base: func_abs, result_base: Some(func_abs), expected_results: 1, varargs: vec![] });
-                                    continue;
+                                LuaValue::NativeFunction(_) | LuaValue::Closure(_) => {
+                                    let args = if fallback_lt {
+                                        vec![rhs_v, lhs_v]
+                                    } else {
+                                        vec![lhs_v, rhs_v]
+                                    };
+                                    let results = self.call_metamethod(mm, args)?;
+                                    let v = results.into_iter().next().unwrap_or(LuaValue::Nil);
+                                    reg!(*dst) = LuaValue::Boolean(if fallback_lt { !v.is_truthy() } else { v.is_truthy() });
                                 }
                                 v => return Err(LuaError::TypeError { expected: "function", got: v.type_name() }),
                             }
@@ -1766,7 +1783,7 @@ impl Vm {
     }
 
     fn table_get_with_metamethod(
-        &self,
+        &mut self,
         table: &Arc<RwLock<LuaTable>>,
         key: &LuaValue,
     ) -> Result<LuaValue, LuaError> {
@@ -1782,12 +1799,16 @@ impl Vm {
         let mm = mt.read().unwrap().get(&LuaValue::LuaString("__index".into()));
         match mm {
             LuaValue::Table(fallback) => Ok(fallback.read().unwrap().get(key)),
+            LuaValue::NativeFunction(_) => {
+                let out = self.call_metamethod(mm, vec![LuaValue::Table(table.clone()), key.clone()])?;
+                Ok(out.into_iter().next().unwrap_or(LuaValue::Nil))
+            }
             _ => Ok(LuaValue::Nil),
         }
     }
 
     fn table_set_with_metamethod(
-        &self,
+        &mut self,
         table: &Arc<RwLock<LuaTable>>,
         key: LuaValue,
         val: LuaValue,
@@ -1803,6 +1824,9 @@ impl Vm {
             let mm = mt.read().unwrap().get(&LuaValue::LuaString("__newindex".into()));
             if let LuaValue::Table(fallback) = mm {
                 fallback.write().unwrap().set(key, val);
+                return Ok(());
+            } else if matches!(mm, LuaValue::NativeFunction(_)) {
+                self.call_metamethod(mm, vec![LuaValue::Table(table.clone()), key, val])?;
                 return Ok(());
             }
         }
@@ -1970,12 +1994,7 @@ fn arith_add(a: &LuaValue, b: &LuaValue) -> Result<LuaValue, LuaError> {
         (LuaValue::Float(x), LuaValue::Float(y)) => LuaValue::Float(x + y),
         (LuaValue::Integer(x), LuaValue::Float(y)) => LuaValue::Float(*x as f64 + y),
         (LuaValue::Float(x), LuaValue::Integer(y)) => LuaValue::Float(x + *y as f64),
-        _ => {
-            return Err(LuaError::TypeError {
-                expected: "number",
-                got: a.type_name(),
-            })
-        }
+        _ => LuaValue::Float(to_float(a)? + to_float(b)?),
     })
 }
 
@@ -1985,12 +2004,7 @@ fn arith_sub(a: &LuaValue, b: &LuaValue) -> Result<LuaValue, LuaError> {
         (LuaValue::Float(x), LuaValue::Float(y)) => LuaValue::Float(x - y),
         (LuaValue::Integer(x), LuaValue::Float(y)) => LuaValue::Float(*x as f64 - y),
         (LuaValue::Float(x), LuaValue::Integer(y)) => LuaValue::Float(x - *y as f64),
-        _ => {
-            return Err(LuaError::TypeError {
-                expected: "number",
-                got: a.type_name(),
-            })
-        }
+        _ => LuaValue::Float(to_float(a)? - to_float(b)?),
     })
 }
 
@@ -2000,12 +2014,7 @@ fn arith_mul(a: &LuaValue, b: &LuaValue) -> Result<LuaValue, LuaError> {
         (LuaValue::Float(x), LuaValue::Float(y)) => LuaValue::Float(x * y),
         (LuaValue::Integer(x), LuaValue::Float(y)) => LuaValue::Float(*x as f64 * y),
         (LuaValue::Float(x), LuaValue::Integer(y)) => LuaValue::Float(x * *y as f64),
-        _ => {
-            return Err(LuaError::TypeError {
-                expected: "number",
-                got: a.type_name(),
-            })
-        }
+        _ => LuaValue::Float(to_float(a)? * to_float(b)?),
     })
 }
 
@@ -2069,6 +2078,10 @@ fn cmp_eq(a: &LuaValue, b: &LuaValue) -> bool {
         (LuaValue::Integer(x), LuaValue::Float(y)) => (*x as f64) == *y,
         (LuaValue::Float(x), LuaValue::Integer(y)) => *x == (*y as f64),
         (LuaValue::LuaString(x), LuaValue::LuaString(y)) => x == y,
+        (LuaValue::NativeFunction(f1), LuaValue::NativeFunction(f2)) => (*f1 as usize) == (*f2 as usize),
+        (LuaValue::Closure(c1), LuaValue::Closure(c2)) => Arc::ptr_eq(c1, c2),
+        (LuaValue::Table(t1), LuaValue::Table(t2)) => Arc::ptr_eq(t1, t2),
+        (LuaValue::Thread(a), LuaValue::Thread(b)) => a == b,
         _ => false,
     }
 }
@@ -2111,6 +2124,19 @@ fn to_float(v: &LuaValue) -> Result<f64, LuaError> {
     match v {
         LuaValue::Integer(n) => Ok(*n as f64),
         LuaValue::Float(f) => Ok(*f),
+        LuaValue::LuaString(s) => {
+            let t = s.trim();
+            if let Ok(i) = t.parse::<i64>() {
+                Ok(i as f64)
+            } else if let Ok(f) = t.parse::<f64>() {
+                Ok(f)
+            } else {
+                Err(LuaError::TypeError {
+                    expected: "number",
+                    got: v.type_name(),
+                })
+            }
+        }
         _ => Err(LuaError::TypeError {
             expected: "number",
             got: v.type_name(),
@@ -2706,6 +2732,54 @@ mod tests {
         assert_eq!(
             run("setmetatable('', {tag='strmt'}); return getmetatable('x').tag"),
             LuaValue::LuaString("strmt".into()),
+        );
+    }
+
+    #[test]
+    fn le_falls_back_to_lt() {
+        assert_eq!(
+            run("local mt={__lt=function(a,b) return a.n < b.n end}; local a=setmetatable({n=2},mt); local b=setmetatable({n=3},mt); return a <= b"),
+            LuaValue::Boolean(true),
+        );
+    }
+
+    #[test]
+    fn protected_metatable_blocks_set() {
+        assert!(matches!(
+            run_err("local t={}; setmetatable(t,{__metatable='locked'}); setmetatable(t,{}); return 1"),
+            LuaError::Runtime(_)
+        ));
+    }
+
+    #[test]
+    fn protected_metatable_hides_actual_table() {
+        assert_eq!(
+            run("local t={}; setmetatable(t,{__metatable='locked'}); return getmetatable(t)"),
+            LuaValue::LuaString("locked".into()),
+        );
+    }
+
+    #[test]
+    fn tostring_metamethod_must_return_string() {
+        assert!(matches!(
+            run_err("local t={}; setmetatable(t,{__tostring=function(_) return 123 end}); return tostring(t)"),
+            LuaError::Runtime(_)
+        ));
+    }
+
+    #[test]
+    fn table_reference_equality_runtime() {
+        assert_eq!(
+            run("local t={}; return t == t"),
+            LuaValue::Boolean(true),
+        );
+    }
+
+    #[test]
+    fn arithmetic_coerces_numeric_strings() {
+        assert_eq!(
+            run("return '3' + 4"),
+            LuaValue::Float(7.0),
         );
     }
 

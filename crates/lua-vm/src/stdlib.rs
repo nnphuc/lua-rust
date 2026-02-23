@@ -64,8 +64,15 @@ fn lua_tostring(args: Vec<LuaValue>) -> Result<Vec<LuaValue>, LuaError> {
     })?;
     if !matches!(mm, LuaValue::Nil) {
         let out = call_callable(mm, vec![v.clone()])?;
-        let s = out.into_iter().next().unwrap_or(LuaValue::Nil).to_string();
-        return Ok(vec![LuaValue::LuaString(s)]);
+        match out.into_iter().next().unwrap_or(LuaValue::Nil) {
+            LuaValue::LuaString(s) => return Ok(vec![LuaValue::LuaString(s)]),
+            other => {
+                return Err(LuaError::Runtime(format!(
+                    "'__tostring' must return a string, got {}",
+                    other.type_name()
+                )))
+            }
+        }
     }
     Ok(vec![LuaValue::LuaString(v.to_string())])
 }
@@ -168,13 +175,33 @@ fn lua_rawset(args: Vec<LuaValue>) -> Result<Vec<LuaValue>, LuaError> {
 fn lua_getmetatable(args: Vec<LuaValue>) -> Result<Vec<LuaValue>, LuaError> {
     let v = args.into_iter().next().unwrap_or(LuaValue::Nil);
     let mt = crate::vm::with_current_vm(|vm| vm.get_metatable(&v))?;
-    Ok(vec![mt.map(LuaValue::Table).unwrap_or(LuaValue::Nil)])
+    if let Some(mt_tbl) = mt {
+        let protected = mt_tbl
+            .read()
+            .unwrap()
+            .get(&LuaValue::LuaString("__metatable".into()));
+        if !matches!(protected, LuaValue::Nil) {
+            return Ok(vec![protected]);
+        }
+        return Ok(vec![LuaValue::Table(mt_tbl)]);
+    }
+    Ok(vec![LuaValue::Nil])
 }
 
 fn lua_setmetatable(args: Vec<LuaValue>) -> Result<Vec<LuaValue>, LuaError> {
     let mut it = args.into_iter();
     let value = it.next().unwrap_or(LuaValue::Nil);
     let mt = it.next().unwrap_or(LuaValue::Nil);
+    let current_mt = crate::vm::with_current_vm(|vm| vm.get_metatable(&value))?;
+    if let Some(cur) = current_mt {
+        let protected = cur
+            .read()
+            .unwrap()
+            .get(&LuaValue::LuaString("__metatable".into()));
+        if !matches!(protected, LuaValue::Nil) {
+            return Err(LuaError::Runtime("cannot change a protected metatable".into()));
+        }
+    }
     let new_mt = match mt {
         LuaValue::Nil => None,
         LuaValue::Table(mt) => Some(mt),

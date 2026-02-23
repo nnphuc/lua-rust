@@ -111,7 +111,7 @@ lua-rust/
 
 ```sh
 cargo test --workspace
-# 176 tests, 0 failures
+# 182 tests, 0 failures
 ```
 
 ## Linting
@@ -123,4 +123,4 @@ cargo fmt --check
 
 ## Not yet implemented
 
-- Full Lua compatibility edge-cases (metamethod rules, coercions, and stdlib parity)
+- Remaining Lua parity gaps (e.g. callable `__index`/`__newindex` closure semantics and full stdlib behavior parity)

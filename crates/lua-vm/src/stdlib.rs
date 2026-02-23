@@ -1,6 +1,9 @@
 use lua_core::{LuaError, LuaTable, LuaValue};
 use std::collections::HashMap;
+use std::io::{self, Write};
+use std::sync::OnceLock;
 use std::sync::{Arc, RwLock};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub fn register(globals: &mut HashMap<String, LuaValue>) {
     globals.insert("print".into(),    LuaValue::NativeFunction(lua_print));
@@ -15,9 +18,13 @@ pub fn register(globals: &mut HashMap<String, LuaValue>) {
     globals.insert("unpack".into(),   LuaValue::NativeFunction(lua_unpack));
     globals.insert("rawget".into(),   LuaValue::NativeFunction(lua_rawget));
     globals.insert("rawset".into(),   LuaValue::NativeFunction(lua_rawset));
+    globals.insert("getmetatable".into(), LuaValue::NativeFunction(lua_getmetatable));
+    globals.insert("setmetatable".into(), LuaValue::NativeFunction(lua_setmetatable));
 
     globals.insert("math".into(),   make_math_lib());
     globals.insert("string".into(), make_string_lib());
+    globals.insert("io".into(),     make_io_lib());
+    globals.insert("os".into(),     make_os_lib());
 }
 
 // ── Basic functions ─────────────────────────────────────────────────────────
@@ -126,6 +133,100 @@ fn lua_rawset(args: Vec<LuaValue>) -> Result<Vec<LuaValue>, LuaError> {
         LuaValue::Table(tbl) => { tbl.write().unwrap().set(k, v); Ok(vec![t]) }
         _ => Err(LuaError::Runtime("table expected".into())),
     }
+}
+
+fn lua_getmetatable(args: Vec<LuaValue>) -> Result<Vec<LuaValue>, LuaError> {
+    match args.into_iter().next().unwrap_or(LuaValue::Nil) {
+        LuaValue::Table(t) => {
+            let mt = t.read().unwrap().get_metatable();
+            Ok(vec![mt.map(LuaValue::Table).unwrap_or(LuaValue::Nil)])
+        }
+        v => Err(LuaError::TypeError { expected: "table", got: v.type_name() }),
+    }
+}
+
+fn lua_setmetatable(args: Vec<LuaValue>) -> Result<Vec<LuaValue>, LuaError> {
+    let mut it = args.into_iter();
+    let t = it.next().unwrap_or(LuaValue::Nil);
+    let mt = it.next().unwrap_or(LuaValue::Nil);
+    let table = match &t {
+        LuaValue::Table(tbl) => tbl.clone(),
+        v => return Err(LuaError::TypeError { expected: "table", got: v.type_name() }),
+    };
+    let new_mt = match mt {
+        LuaValue::Nil => None,
+        LuaValue::Table(mt) => Some(mt),
+        v => return Err(LuaError::TypeError { expected: "table", got: v.type_name() }),
+    };
+    table.write().unwrap().set_metatable(new_mt);
+    Ok(vec![t])
+}
+
+// ── io / os libraries ──────────────────────────────────────────────────────
+
+fn make_io_lib() -> LuaValue {
+    let t = Arc::new(RwLock::new(LuaTable::new()));
+    {
+        let mut tbl = t.write().unwrap();
+        tbl.set(LuaValue::LuaString("write".into()), LuaValue::NativeFunction(io_write));
+        tbl.set(LuaValue::LuaString("flush".into()), LuaValue::NativeFunction(io_flush));
+    }
+    LuaValue::Table(t)
+}
+
+fn make_os_lib() -> LuaValue {
+    let t = Arc::new(RwLock::new(LuaTable::new()));
+    {
+        let mut tbl = t.write().unwrap();
+        tbl.set(LuaValue::LuaString("clock".into()), LuaValue::NativeFunction(os_clock));
+        tbl.set(LuaValue::LuaString("time".into()), LuaValue::NativeFunction(os_time));
+        tbl.set(LuaValue::LuaString("date".into()), LuaValue::NativeFunction(os_date));
+    }
+    LuaValue::Table(t)
+}
+
+fn io_write(args: Vec<LuaValue>) -> Result<Vec<LuaValue>, LuaError> {
+    let mut out = io::stdout().lock();
+    for v in args {
+        out.write_all(v.to_string().as_bytes())
+            .map_err(|e| LuaError::Runtime(format!("io.write failed: {e}")))?;
+    }
+    out.flush()
+        .map_err(|e| LuaError::Runtime(format!("io.write flush failed: {e}")))?;
+    Ok(vec![])
+}
+
+fn io_flush(_: Vec<LuaValue>) -> Result<Vec<LuaValue>, LuaError> {
+    io::stdout()
+        .flush()
+        .map_err(|e| LuaError::Runtime(format!("io.flush failed: {e}")))?;
+    Ok(vec![LuaValue::Boolean(true)])
+}
+
+fn os_clock(_: Vec<LuaValue>) -> Result<Vec<LuaValue>, LuaError> {
+    static START: OnceLock<Instant> = OnceLock::new();
+    let start = START.get_or_init(Instant::now);
+    Ok(vec![LuaValue::Float(start.elapsed().as_secs_f64())])
+}
+
+fn os_time(_: Vec<LuaValue>) -> Result<Vec<LuaValue>, LuaError> {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| LuaError::Runtime(format!("os.time failed: {e}")))?
+        .as_secs() as i64;
+    Ok(vec![LuaValue::Integer(secs)])
+}
+
+fn os_date(args: Vec<LuaValue>) -> Result<Vec<LuaValue>, LuaError> {
+    let t = match args.get(1) {
+        Some(LuaValue::Integer(v)) => *v,
+        Some(LuaValue::Float(v)) => *v as i64,
+        _ => SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| LuaError::Runtime(format!("os.date failed: {e}")))?
+            .as_secs() as i64,
+    };
+    Ok(vec![LuaValue::LuaString(format!("{t}"))])
 }
 
 // ── ipairs / pairs ──────────────────────────────────────────────────────────

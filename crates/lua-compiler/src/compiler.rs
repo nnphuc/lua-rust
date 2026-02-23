@@ -1,6 +1,7 @@
 use crate::chunk::{Chunk, ProtoBuilder};
 use lua_core::{LuaError, LuaValue, OpCode, UpvalueDesc};
 use lua_parser::ast::{BinOp, Block, CallArgs, Expr, FuncBody, Stmt, UnOp};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 // ── Register allocator / scope tracker ───────────────────────────────────────
@@ -114,6 +115,10 @@ pub struct Compiler {
     /// Stack of break-patch lists; one entry per enclosing loop.
     /// Each entry holds instruction indices that need patching to the loop exit.
     break_patches: Vec<Vec<usize>>,
+    /// Label positions (instruction index) in the current function.
+    labels: HashMap<String, usize>,
+    /// Forward gotos waiting for their target label.
+    pending_gotos: HashMap<String, Vec<usize>>,
 }
 
 impl Compiler {
@@ -125,6 +130,8 @@ impl Compiler {
             parent_locals: Vec::new(),
             parent_upvalues: Vec::new(),
             break_patches: Vec::new(),
+            labels: HashMap::new(),
+            pending_gotos: HashMap::new(),
         }
     }
 
@@ -136,6 +143,8 @@ impl Compiler {
             parent_locals: parent.frame.locals.clone(),
             parent_upvalues: parent.upvalues.clone(),
             break_patches: Vec::new(),
+            labels: HashMap::new(),
+            pending_gotos: HashMap::new(),
         }
     }
 
@@ -166,9 +175,45 @@ impl Compiler {
         }
     }
 
+    fn compile_goto(&mut self, label: &str) {
+        let jmp_idx = self.proto.instructions.len();
+        self.proto.emit(OpCode::Jump { offset: 0 });
+        if let Some(&target) = self.labels.get(label) {
+            let off = target as i16 - (jmp_idx as i16 + 1);
+            self.patch_jump(jmp_idx, off);
+        } else {
+            self.pending_gotos
+                .entry(label.to_owned())
+                .or_default()
+                .push(jmp_idx);
+        }
+    }
+
+    fn compile_label(&mut self, name: &str) -> Result<(), LuaError> {
+        let target = self.proto.instructions.len();
+        if self.labels.insert(name.to_owned(), target).is_some() {
+            return Err(LuaError::Runtime(format!("duplicate label '{}'", name)));
+        }
+        if let Some(jmps) = self.pending_gotos.remove(name) {
+            for jmp_idx in jmps {
+                let off = target as i16 - (jmp_idx as i16 + 1);
+                self.patch_jump(jmp_idx, off);
+            }
+        }
+        Ok(())
+    }
+
+    fn ensure_all_gotos_resolved(&self) -> Result<(), LuaError> {
+        if let Some((label, _)) = self.pending_gotos.iter().next() {
+            return Err(LuaError::Runtime(format!("no visible label '{}' for <goto>", label)));
+        }
+        Ok(())
+    }
+
     /// Compile `block` and return the finished [`Chunk`].
     pub fn compile(mut self, block: &Block) -> Result<Chunk, LuaError> {
         self.compile_block(block)?;
+        self.ensure_all_gotos_resolved()?;
         // Implicit `return nil` at end of top-level chunk
         let nil_reg = self.frame.alloc()?;
         self.proto.emit(OpCode::LoadNil { dst: nil_reg });
@@ -491,9 +536,8 @@ impl Compiler {
             Stmt::GenericFor { vars, iterators, body, .. } => {
                 self.compile_generic_for(vars, iterators, body)?;
             }
-            Stmt::Goto { .. } | Stmt::Label { .. } => {
-                return Err(LuaError::Internal("goto/label not yet implemented".into()));
-            }
+            Stmt::Goto { label, .. } => self.compile_goto(label),
+            Stmt::Label { name, .. } => self.compile_label(name)?,
         }
         Ok(())
     }
@@ -817,6 +861,7 @@ impl Compiler {
                 });
             }
         }
+        child.ensure_all_gotos_resolved()?;
         child.frame.pop_scope();
         // Implicit return nil
         let nil = child.frame.alloc()?;
@@ -1681,5 +1726,19 @@ mod tests {
         let block = lua_parser::Parser::new("repeat local x = 1 until x > 0")
             .unwrap().parse().unwrap();
         assert!(Compiler::new("<test>").compile(&block).is_ok());
+    }
+
+    #[test]
+    fn goto_label_compiles() {
+        let block = lua_parser::Parser::new("local x = 1; goto done; x = 2; ::done:: return x")
+            .unwrap().parse().unwrap();
+        assert!(Compiler::new("<test>").compile(&block).is_ok());
+    }
+
+    #[test]
+    fn goto_missing_label_errors() {
+        let block = lua_parser::Parser::new("goto nowhere")
+            .unwrap().parse().unwrap();
+        assert!(Compiler::new("<test>").compile(&block).is_err());
     }
 }

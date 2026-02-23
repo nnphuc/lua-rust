@@ -1,5 +1,6 @@
 use crate::value::LuaValue;
 use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 
 /// A Lua table: an associative array keyed by any non-nil, non-NaN value.
 ///
@@ -9,6 +10,7 @@ use std::collections::HashMap;
 pub struct LuaTable {
     pub array: Vec<LuaValue>,                  // 1-indexed: array[i-1] = t[i]
     pub hash:  HashMap<HashKey, LuaValue>,
+    pub metatable: Option<Arc<RwLock<LuaTable>>>,
 }
 
 /// Keys that can be stored in the hash part of a table.
@@ -42,6 +44,14 @@ impl HashKey {
 impl LuaTable {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn get_metatable(&self) -> Option<Arc<RwLock<LuaTable>>> {
+        self.metatable.clone()
+    }
+
+    pub fn set_metatable(&mut self, mt: Option<Arc<RwLock<LuaTable>>>) {
+        self.metatable = mt;
     }
 
     /// Read `t[key]`. Returns `LuaValue::Nil` for missing keys.

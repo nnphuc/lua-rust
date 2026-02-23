@@ -312,7 +312,7 @@ impl Vm {
                 }
                 OpCode::GetTable { dst, table, key } => {
                     let val = match &reg!(*table).clone() {
-                        LuaValue::Table(t) => t.read().unwrap().get(&reg!(*key).clone()),
+                        LuaValue::Table(t) => self.table_get_with_metamethod(t, &reg!(*key).clone())?,
                         v => return Err(LuaError::TypeError { expected: "table", got: v.type_name() }),
                     };
                     reg!(*dst) = val;
@@ -321,14 +321,14 @@ impl Vm {
                     let k = reg!(*key).clone();
                     let v = reg!(*val).clone();
                     match reg!(*table).clone() {
-                        LuaValue::Table(t) => t.write().unwrap().set(k, v),
+                        LuaValue::Table(t) => self.table_set_with_metamethod(&t, k, v)?,
                         v => return Err(LuaError::TypeError { expected: "table", got: v.type_name() }),
                     }
                 }
                 OpCode::GetField { dst, table, name_idx } => {
                     let key = LuaValue::LuaString(proto.names[*name_idx as usize].clone());
                     let val = match &reg!(*table).clone() {
-                        LuaValue::Table(t) => t.read().unwrap().get(&key),
+                        LuaValue::Table(t) => self.table_get_with_metamethod(t, &key)?,
                         v => return Err(LuaError::TypeError { expected: "table", got: v.type_name() }),
                     };
                     reg!(*dst) = val;
@@ -337,7 +337,7 @@ impl Vm {
                     let key = LuaValue::LuaString(proto.names[*name_idx as usize].clone());
                     let v = reg!(*val).clone();
                     match reg!(*table).clone() {
-                        LuaValue::Table(t) => t.write().unwrap().set(key, v),
+                        LuaValue::Table(t) => self.table_set_with_metamethod(&t, key, v)?,
                         v => return Err(LuaError::TypeError { expected: "table", got: v.type_name() }),
                     }
                 }
@@ -360,6 +360,52 @@ impl Vm {
                 }
             }
         }
+    }
+
+    fn table_get_with_metamethod(
+        &self,
+        table: &Arc<RwLock<LuaTable>>,
+        key: &LuaValue,
+    ) -> Result<LuaValue, LuaError> {
+        let direct = table.read().unwrap().get(key);
+        if !matches!(direct, LuaValue::Nil) {
+            return Ok(direct);
+        }
+
+        let mt = table.read().unwrap().get_metatable();
+        let Some(mt) = mt else {
+            return Ok(LuaValue::Nil);
+        };
+        let mm = mt.read().unwrap().get(&LuaValue::LuaString("__index".into()));
+        match mm {
+            LuaValue::Table(fallback) => Ok(fallback.read().unwrap().get(key)),
+            _ => Ok(LuaValue::Nil),
+        }
+    }
+
+    fn table_set_with_metamethod(
+        &self,
+        table: &Arc<RwLock<LuaTable>>,
+        key: LuaValue,
+        val: LuaValue,
+    ) -> Result<(), LuaError> {
+        let exists = !matches!(table.read().unwrap().get(&key), LuaValue::Nil);
+        if exists {
+            table.write().unwrap().set(key, val);
+            return Ok(());
+        }
+
+        let mt = table.read().unwrap().get_metatable();
+        if let Some(mt) = mt {
+            let mm = mt.read().unwrap().get(&LuaValue::LuaString("__newindex".into()));
+            if let LuaValue::Table(fallback) = mm {
+                fallback.write().unwrap().set(key, val);
+                return Ok(());
+            }
+        }
+
+        table.write().unwrap().set(key, val);
+        Ok(())
     }
 
     // ── Frame management ──────────────────────────────────────────────────────
@@ -924,6 +970,23 @@ mod tests {
         );
     }
 
+    // ── goto / labels ───────────────────────────────────────────────────────
+    #[test]
+    fn goto_forward_jump() {
+        assert_eq!(
+            run("local x = 1; goto done; x = 2; ::done:: return x"),
+            LuaValue::Integer(1),
+        );
+    }
+
+    #[test]
+    fn goto_backward_jump() {
+        assert_eq!(
+            run("local i = 0; ::loop:: i = i + 1; if i < 3 then goto loop end; return i"),
+            LuaValue::Integer(3),
+        );
+    }
+
     // ── multiple return values ────────────────────────────────────────────────
     #[test]
     fn multi_return_assign() {
@@ -1004,6 +1067,45 @@ mod tests {
     #[test]
     fn math_max_test() {
         assert_eq!(run("return math.max(1, 5, 3)"), LuaValue::Integer(5));
+    }
+
+    #[test]
+    fn io_library_exists() {
+        assert_eq!(run("return type(io)"), LuaValue::LuaString("table".into()));
+    }
+
+    #[test]
+    fn os_library_exists() {
+        assert_eq!(run("return type(os)"), LuaValue::LuaString("table".into()));
+    }
+
+    #[test]
+    fn os_time_returns_number() {
+        assert_eq!(run("return type(os.time())"), LuaValue::LuaString("number".into()));
+    }
+
+    #[test]
+    fn metatable_index_fallback() {
+        assert_eq!(
+            run("local t = {}; local mt = { __index = { x = 7 } }; setmetatable(t, mt); return t.x"),
+            LuaValue::Integer(7),
+        );
+    }
+
+    #[test]
+    fn metatable_newindex_fallback() {
+        assert_eq!(
+            run("local t = {}; local sink = {}; local mt = { __newindex = sink }; setmetatable(t, mt); t.a = 5; return sink.a"),
+            LuaValue::Integer(5),
+        );
+    }
+
+    #[test]
+    fn getmetatable_returns_table() {
+        assert_eq!(
+            run("local t = {}; local mt = {}; setmetatable(t, mt); return type(getmetatable(t))"),
+            LuaValue::LuaString("table".into()),
+        );
     }
 
     // ── stdlib: string ───────────────────────────────────────────────────────

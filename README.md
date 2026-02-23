@@ -29,6 +29,7 @@ No system Lua installation required.
 | `while` loops | ✅ |
 | `repeat … until` loops | ✅ |
 | `break` inside any loop | ✅ |
+| `goto` / labels (`::name::`, `goto name`) | ✅ |
 | Numeric `for` loops | ✅ |
 | Generic `for` loops (`for k, v in ipairs(t) do`) | ✅ |
 | `do … end` blocks | ✅ |
@@ -44,6 +45,9 @@ No system Lua installation required.
 | Method calls `obj:method(args)` | ✅ |
 | `print`, `tostring`, `tonumber`, `type`, `assert`, `error` | ✅ |
 | `ipairs`, `pairs`, `select`, `unpack`, `rawget`, `rawset` | ✅ |
+| `io` library (basic: `write`, `flush`) | ✅ |
+| `os` library (basic: `clock`, `time`, `date`) | ✅ |
+| Metatables (basic `getmetatable` / `setmetatable`, table `__index` / `__newindex`) | ✅ |
 | `math` library (`floor`, `ceil`, `abs`, `sqrt`, `max`, `min`, `sin`, `cos`, `tan`, `log`, `exp`, `modf`, `fmod`, `pi`, `huge`, `type`, `tointeger`) | ✅ |
 | `string` library (`sub`, `len`, `upper`, `lower`, `rep`, `reverse`, `byte`, `char`, `find`, `format`) | ✅ |
 | REPL readline: history, arrow keys, Ctrl-R search | ✅ |
@@ -118,7 +122,4 @@ cargo fmt --check
 
 ## Not yet implemented
 
-- Metatables and `__index` / `__newindex` metamethods
-- `io` / `os` libraries
-- `goto` / labels
 - `coroutine`

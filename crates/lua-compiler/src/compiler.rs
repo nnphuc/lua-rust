@@ -304,7 +304,52 @@ impl Compiler {
                 targets, values, ..
             } => {
                 let mut val_regs: Vec<u8> = Vec::new();
-                for val in values {
+                let n_targets = targets.len();
+                for (vi, val) in values.iter().enumerate() {
+                    let is_last = vi == values.len() - 1;
+                    let remaining = n_targets.saturating_sub(val_regs.len());
+
+                    // Lua rule: in an assignment, only the last expression can expand
+                    // to multiple values (function call / vararg), and only if needed.
+                    if is_last && remaining > 1 {
+                        if let Expr::FnCall { func, args, .. } = val {
+                            let func_reg = self.compile_expr_impl(func, None)?;
+                            let num_args = self.compile_call_args(args, func_reg + 1)?;
+                            self.proto.emit(OpCode::Call {
+                                func: func_reg,
+                                num_args,
+                                num_results: remaining as u8,
+                            });
+
+                            let mut targets: Vec<u8> = Vec::new();
+                            for _ in 0..remaining {
+                                targets.push(self.frame.alloc()?);
+                            }
+                            let src_start = func_reg;
+                            let dst_start = targets[0];
+                            if dst_start <= src_start {
+                                for i in 0..remaining {
+                                    let src = func_reg + i as u8;
+                                    let dst = targets[i];
+                                    if dst != src {
+                                        self.proto.emit(OpCode::Move { dst, src });
+                                    }
+                                    val_regs.push(dst);
+                                }
+                            } else {
+                                for i in (0..remaining).rev() {
+                                    let src = func_reg + i as u8;
+                                    let dst = targets[i];
+                                    if dst != src {
+                                        self.proto.emit(OpCode::Move { dst, src });
+                                    }
+                                }
+                                val_regs.extend_from_slice(&targets);
+                            }
+                            break;
+                        }
+                    }
+
                     val_regs.push(self.compile_expr(val)?);
                 }
                 for (i, target) in targets.iter().enumerate() {

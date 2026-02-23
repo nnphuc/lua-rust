@@ -933,6 +933,14 @@ mod tests {
         );
     }
 
+    #[test]
+    fn multi_return_reassign() {
+        assert_eq!(
+            run("local function minmax(a, b) if a < b then return a, b else return b, a end end; local x, y = 0, 0; x, y = minmax(9, 3); return y"),
+            LuaValue::Integer(9),
+        );
+    }
+
     // ── tables ────────────────────────────────────────────────────────────────
     #[test]
     fn table_positional() {

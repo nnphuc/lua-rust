@@ -26,17 +26,99 @@ fn exec(src: &str, vm: &mut Vm) -> Result<LuaValue, String> {
     vm.execute(&chunk).map_err(|e| format!("runtime error: {e}"))
 }
 
-// ── Script runner ─────────────────────────────────────────────────────────────
+// ── Compile & dump ────────────────────────────────────────────────────────────
 
-fn run_file(path: &str) {
+fn compile_dump(path: &str) {
     let src = std::fs::read_to_string(path).unwrap_or_else(|e| {
         eprintln!("error: cannot read '{path}': {e}");
         std::process::exit(1);
     });
-    let mut vm = Vm::new();
-    if let Err(e) = exec(&src, &mut vm) {
-        eprintln!("{e}");
+    let block = Parser::new(&src)
+        .and_then(|p| p.parse())
+        .unwrap_or_else(|e| {
+            eprintln!("parse error: {e}");
+            std::process::exit(1);
+        });
+    let chunk = Compiler::new(path)
+        .compile(&block)
+        .unwrap_or_else(|e| {
+            eprintln!("compile error: {e}");
+            std::process::exit(1);
+        });
+    print!("{}", lua_compiler::disassemble(&chunk.proto));
+}
+
+// ── Bytecode dump ─────────────────────────────────────────────────────────────
+
+fn dump_bytecode(src_path: &str, out_path: Option<&str>) {
+    let src = std::fs::read_to_string(src_path).unwrap_or_else(|e| {
+        eprintln!("error: cannot read '{src_path}': {e}");
         std::process::exit(1);
+    });
+    let block = lua_parser::Parser::new(&src)
+        .and_then(|p| p.parse())
+        .unwrap_or_else(|e| {
+            eprintln!("parse error: {e}");
+            std::process::exit(1);
+        });
+    let chunk = lua_compiler::Compiler::new(src_path)
+        .compile(&block)
+        .unwrap_or_else(|e| {
+            eprintln!("compile error: {e}");
+            std::process::exit(1);
+        });
+    let bytes = lua_compiler::encode_chunk(&chunk);
+
+    let default_out;
+    let dest = match out_path {
+        Some(p) => p,
+        None => {
+            default_out = if src_path.ends_with(".lua") {
+                format!("{}c", src_path) // script.lua → script.luac
+            } else {
+                format!("{src_path}.luac")
+            };
+            &default_out
+        }
+    };
+
+    std::fs::write(dest, &bytes).unwrap_or_else(|e| {
+        eprintln!("error: cannot write '{dest}': {e}");
+        std::process::exit(1);
+    });
+    eprintln!("wrote {} bytes to '{dest}'", bytes.len());
+}
+
+// ── Script runner ─────────────────────────────────────────────────────────────
+
+fn run_file(path: &str) {
+    let raw = std::fs::read(path).unwrap_or_else(|e| {
+        eprintln!("error: cannot read '{path}': {e}");
+        std::process::exit(1);
+    });
+
+    if raw.starts_with(lua_compiler::MAGIC) {
+        // Pre-compiled bytecode path
+        let chunk = lua_compiler::decode_chunk(&raw).unwrap_or_else(|e| {
+            eprintln!("bytecode error: {e}");
+            std::process::exit(1);
+        });
+        let mut vm = Vm::new();
+        if let Err(e) = vm.execute(&chunk) {
+            eprintln!("runtime error: {e}");
+            std::process::exit(1);
+        }
+    } else {
+        // Source text path
+        let src = String::from_utf8(raw).unwrap_or_else(|e| {
+            eprintln!("error: '{path}' is not valid UTF-8: {e}");
+            std::process::exit(1);
+        });
+        let mut vm = Vm::new();
+        if let Err(e) = exec(&src, &mut vm) {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
     }
 }
 
@@ -163,11 +245,16 @@ fn hoist_locals(src: &str) -> String {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    match args.len() {
-        1 => repl(),
-        2 => run_file(&args[1]),
+    match args.as_slice() {
+        [_] => repl(),
+        [_, flag, path] if flag == "--compile" || flag == "-c" => compile_dump(path),
+        [_, flag, src, out] if flag == "--dump" || flag == "-d" => {
+            dump_bytecode(src, Some(out))
+        }
+        [_, flag, src] if flag == "--dump" || flag == "-d" => dump_bytecode(src, None),
+        [_, path] => run_file(path),
         _ => {
-            eprintln!("usage: lua [script.lua]");
+            eprintln!("usage: lua [--compile|-c] [--dump|-d] [script.lua] [out.luac]");
             std::process::exit(1);
         }
     }

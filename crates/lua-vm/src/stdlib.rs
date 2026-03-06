@@ -32,6 +32,33 @@ pub fn register(globals: &mut HashMap<String, LuaValue>) {
     globals.insert("pcall".into(), LuaValue::NativeFunction(lua_pcall));
     globals.insert("rawequal".into(), LuaValue::NativeFunction(lua_rawequal));
     globals.insert("rawlen".into(), LuaValue::NativeFunction(lua_rawlen));
+    globals.insert("collectgarbage".into(), LuaValue::NativeFunction(lua_collectgarbage));
+}
+
+// ── Garbage collection ──────────────────────────────────────────────────────
+
+fn lua_collectgarbage(args: Vec<LuaValue>) -> Result<Vec<LuaValue>, LuaError> {
+    let opt = match args.first() {
+        Some(LuaValue::LuaString(s)) => s.as_str(),
+        None => "collect",
+        _ => return Err(LuaError::Runtime("collectgarbage: string argument expected".into())),
+    };
+    match opt {
+        "collect" => {
+            crate::vm::with_current_vm(|vm| {
+                vm.force_gc_collect();
+            })?;
+            Ok(vec![LuaValue::Integer(0)])
+        }
+        "count" => {
+            let count = crate::vm::with_current_vm(|vm| vm.gc.tracked_count())?;
+            Ok(vec![LuaValue::Integer(count as i64)])
+        }
+        "stop" | "restart" | "incremental" | "generational" | "isrunning" | "step" => {
+            Ok(vec![LuaValue::Integer(0)])
+        }
+        _ => Err(LuaError::Runtime(format!("collectgarbage: invalid option '{opt}'"))),
+    }
 }
 
 // ── Basic functions ─────────────────────────────────────────────────────────

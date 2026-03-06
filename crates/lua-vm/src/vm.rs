@@ -1,5 +1,6 @@
 use lua_compiler::Chunk;
 use lua_core::{LuaClosure, LuaError, LuaTable, LuaValue, OpCode, Proto, Upvalue, UpvalueDesc, UpvalueInner};
+use crate::gc::GcState;
 use std::collections::HashMap;
 use std::cell::Cell;
 use std::sync::{Arc, RwLock};
@@ -68,6 +69,12 @@ pub struct Vm {
     coroutines: HashMap<u64, CoroutineState>,
     next_coroutine_id: u64,
     current_coroutine: Option<u64>,
+    pub(crate) gc: GcState,
+    // Raw pointers to current execution state for GC root scanning.
+    // Set at start of run(), cleared on exit via RAII guard.
+    gc_exec_regs: *const Vec<LuaValue>,
+    gc_exec_frames: *const Vec<CallFrame>,
+    gc_exec_upvalues: *const Vec<(usize, Upvalue)>,
 }
 
 impl Vm {
@@ -78,6 +85,10 @@ impl Vm {
             coroutines: HashMap::new(),
             next_coroutine_id: 1,
             current_coroutine: None,
+            gc: GcState::new(),
+            gc_exec_regs: std::ptr::null(),
+            gc_exec_frames: std::ptr::null(),
+            gc_exec_upvalues: std::ptr::null(),
         };
         crate::stdlib::register(&mut vm.globals);
         vm
@@ -288,6 +299,14 @@ impl Vm {
             expected_results: 1,
             varargs: vec![],
         }];
+
+        // Expose execution state for GC root scanning from native functions.
+        // SAFETY: These pointers are valid for the lifetime of run(). They are
+        // only dereferenced from force_gc_collect() which is called from native
+        // functions within run() via with_current_vm.
+        self.gc_exec_regs = &regs as *const Vec<LuaValue>;
+        self.gc_exec_frames = &frames as *const Vec<CallFrame>;
+        self.gc_exec_upvalues = &open_upvalues as *const Vec<(usize, Upvalue)>;
 
         loop {
             let frame = frames.last_mut().unwrap();
@@ -985,7 +1004,12 @@ impl Vm {
                         &regs,
                     );
                     let closure = Arc::new(LuaClosure::new(child_proto, upvalues));
+                    self.gc.track_closure(Arc::downgrade(&closure));
                     reg!(*dst) = LuaValue::Closure(closure);
+                    if self.gc.should_collect() {
+                        let roots = self.gather_gc_roots(&regs, &frames, &open_upvalues);
+                        self.gc.collect(&roots);
+                    }
                 }
 
                 // ── Function calls ────────────────────────────────────────────
@@ -1094,7 +1118,13 @@ impl Vm {
 
                 // ── Tables ────────────────────────────────────────────────────
                 OpCode::NewTable { dst } => {
-                    reg!(*dst) = LuaValue::Table(Arc::new(RwLock::new(LuaTable::new())));
+                    let arc = Arc::new(RwLock::new(LuaTable::new()));
+                    self.gc.track_table(Arc::downgrade(&arc));
+                    reg!(*dst) = LuaValue::Table(arc);
+                    if self.gc.should_collect() {
+                        let roots = self.gather_gc_roots(&regs, &frames, &open_upvalues);
+                        self.gc.collect(&roots);
+                    }
                 }
                 OpCode::GetTable { dst, table, key } => {
                     let val = match &reg!(*table).clone() {
@@ -1721,7 +1751,9 @@ impl Vm {
                         &mut state.open_upvalues,
                         &state.regs,
                     );
-                    reg!(*dst) = LuaValue::Closure(Arc::new(LuaClosure::new(child_proto, upvalues)));
+                    let closure = Arc::new(LuaClosure::new(child_proto, upvalues));
+                    self.gc.track_closure(Arc::downgrade(&closure));
+                    reg!(*dst) = LuaValue::Closure(closure);
                 }
 
                 OpCode::Call { func, num_args, num_results } => {
@@ -1841,7 +1873,9 @@ impl Vm {
                 }
 
                 OpCode::NewTable { dst } => {
-                    reg!(*dst) = LuaValue::Table(Arc::new(RwLock::new(LuaTable::new())));
+                    let arc = Arc::new(RwLock::new(LuaTable::new()));
+                    self.gc.track_table(Arc::downgrade(&arc));
+                    reg!(*dst) = LuaValue::Table(arc);
                 }
                 OpCode::GetTable { dst, table, key } => {
                     reg!(*dst) = match &reg!(*table).clone() {
@@ -2047,6 +2081,137 @@ impl Vm {
                 }
             })
             .collect()
+    }
+}
+
+// ── Garbage collection ───────────────────────────────────────────────────────
+
+impl Vm {
+    fn gather_gc_roots(
+        &self,
+        regs: &[LuaValue],
+        frames: &[CallFrame],
+        open_upvalues: &[(usize, Upvalue)],
+    ) -> Vec<LuaValue> {
+        let mut roots = Vec::new();
+
+        // Global variables (includes stdlib library tables)
+        for v in self.globals.values() {
+            roots.push(v.clone());
+        }
+
+        // Per-type metatables
+        for mt in self.type_metatables.values() {
+            roots.push(LuaValue::Table(mt.clone()));
+        }
+
+        // Current execution registers
+        for v in regs.iter() {
+            if !matches!(v, LuaValue::Nil) {
+                roots.push(v.clone());
+            }
+        }
+
+        // Call frame closures and varargs
+        for frame in frames.iter() {
+            roots.push(LuaValue::Closure(frame.closure.clone()));
+            for v in &frame.varargs {
+                roots.push(v.clone());
+            }
+        }
+
+        // Open upvalue closed values
+        for (_, uv) in open_upvalues.iter() {
+            if let Ok(inner) = uv.0.read() {
+                if let UpvalueInner::Closed(v) = &*inner {
+                    roots.push(v.clone());
+                }
+            }
+        }
+
+        // Coroutine state
+        for state in self.coroutines.values() {
+            roots.push(state.root.clone());
+            for v in state.regs.iter() {
+                if !matches!(v, LuaValue::Nil) {
+                    roots.push(v.clone());
+                }
+            }
+            for frame in &state.frames {
+                roots.push(LuaValue::Closure(frame.closure.clone()));
+                for v in &frame.varargs {
+                    roots.push(v.clone());
+                }
+            }
+            for (_, uv) in &state.open_upvalues {
+                if let Ok(inner) = uv.0.read() {
+                    if let UpvalueInner::Closed(v) = &*inner {
+                        roots.push(v.clone());
+                    }
+                }
+            }
+        }
+
+        roots
+    }
+
+    /// Force a GC collection scanning all reachable roots.
+    /// Called from `collectgarbage("collect")` via native function within `run()`.
+    pub(crate) fn force_gc_collect(&mut self) {
+        let mut roots = Vec::new();
+
+        // Globals (includes stdlib library tables)
+        for v in self.globals.values() {
+            roots.push(v.clone());
+        }
+        for mt in self.type_metatables.values() {
+            roots.push(LuaValue::Table(mt.clone()));
+        }
+
+        // Current execution state (live registers, frames, upvalues)
+        // SAFETY: These pointers are set in run() and are valid while any
+        // native function is executing within run().
+        unsafe {
+            if !self.gc_exec_regs.is_null() {
+                for v in (*self.gc_exec_regs).iter() {
+                    if !matches!(v, LuaValue::Nil) {
+                        roots.push(v.clone());
+                    }
+                }
+            }
+            if !self.gc_exec_frames.is_null() {
+                for frame in (*self.gc_exec_frames).iter() {
+                    roots.push(LuaValue::Closure(frame.closure.clone()));
+                    for v in &frame.varargs {
+                        roots.push(v.clone());
+                    }
+                }
+            }
+            if !self.gc_exec_upvalues.is_null() {
+                for (_, uv) in (*self.gc_exec_upvalues).iter() {
+                    if let Ok(inner) = uv.0.read() {
+                        if let UpvalueInner::Closed(v) = &*inner {
+                            roots.push(v.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Coroutine state
+        for state in self.coroutines.values() {
+            roots.push(state.root.clone());
+            for v in state.regs.iter() {
+                if !matches!(v, LuaValue::Nil) {
+                    roots.push(v.clone());
+                }
+            }
+            for frame in &state.frames {
+                roots.push(LuaValue::Closure(frame.closure.clone()));
+            }
+        }
+
+        self.gc.collect(&roots);
     }
 }
 

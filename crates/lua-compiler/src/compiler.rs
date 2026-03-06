@@ -1,7 +1,7 @@
 use crate::chunk::{Chunk, ProtoBuilder};
 use lua_core::{LuaError, LuaValue, OpCode, UpvalueDesc};
 use lua_parser::ast::{BinOp, Block, CallArgs, Expr, FuncBody, Stmt, UnOp};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 const RETURN_CALL_RESULTS: u8 = 8;
@@ -121,6 +121,9 @@ pub struct Compiler {
     labels: HashMap<String, usize>,
     /// Forward gotos waiting for their target label.
     pending_gotos: HashMap<String, Vec<usize>>,
+    /// Local registers captured as upvalues by child closures.
+    /// Used to determine when `CloseUpvalues` must be emitted at scope exit.
+    captured_regs: HashSet<u8>,
 }
 
 impl Compiler {
@@ -134,6 +137,7 @@ impl Compiler {
             break_patches: Vec::new(),
             labels: HashMap::new(),
             pending_gotos: HashMap::new(),
+            captured_regs: HashSet::new(),
         }
     }
 
@@ -147,6 +151,7 @@ impl Compiler {
             break_patches: Vec::new(),
             labels: HashMap::new(),
             pending_gotos: HashMap::new(),
+            captured_regs: HashSet::new(),
         }
     }
 
@@ -319,6 +324,7 @@ impl Compiler {
         self.upvalues
             .iter()
             .any(|u| matches!(u.desc, UpvalueDesc::Stack(r) if r >= from))
+            || self.captured_regs.iter().any(|&r| r >= from)
     }
 
     fn compile_stmt(&mut self, stmt: &Stmt) -> Result<(), LuaError> {
@@ -964,6 +970,14 @@ impl Compiler {
         // Freeze the upvalue descriptors into the child proto
         child.proto.upvalue_descs = child.upvalues.iter().map(|u| u.desc.clone()).collect();
 
+        // Record which of our registers were captured by the child closure,
+        // so CloseUpvalues is emitted when their scope exits.
+        for uv in &child.upvalues {
+            if let UpvalueDesc::Stack(reg) = uv.desc {
+                self.captured_regs.insert(reg);
+            }
+        }
+
         let child_proto = Arc::new(child.proto.finish());
         let proto_idx = self.proto.add_proto(child_proto);
         let dst = self.frame.alloc()?;
@@ -1134,10 +1148,28 @@ impl Compiler {
                     val_regs.push(self.compile_expr_with_parent(val, parent)?);
                 }
                 for (i, target) in targets.iter().enumerate() {
+                    let src_opt = val_regs.get(i).copied();
                     match target {
                         Expr::Name(name, _) => {
-                            let src_opt = val_regs.get(i).copied();
                             self.assign_name_with_parent(name, src_opt, parent)?;
+                        }
+                        Expr::Index { table, key, .. } => {
+                            let t = self.compile_expr_impl(table, Some(parent))?;
+                            let k = self.compile_expr_impl(key, Some(parent))?;
+                            let v = if let Some(s) = src_opt { s } else {
+                                let r = self.frame.alloc()?;
+                                self.proto.emit(OpCode::LoadNil { dst: r }); r
+                            };
+                            self.proto.emit(OpCode::SetTable { table: t, key: k, val: v });
+                        }
+                        Expr::Field { table, field, .. } => {
+                            let t = self.compile_expr_impl(table, Some(parent))?;
+                            let v = if let Some(s) = src_opt { s } else {
+                                let r = self.frame.alloc()?;
+                                self.proto.emit(OpCode::LoadNil { dst: r }); r
+                            };
+                            let name_idx = self.proto.add_name(field);
+                            self.proto.emit(OpCode::SetField { table: t, name_idx, val: v });
                         }
                         _ => {
                             return Err(LuaError::Internal(

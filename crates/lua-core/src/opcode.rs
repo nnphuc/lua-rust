@@ -71,6 +71,38 @@ pub enum OpCode {
         src: u8,
     },
 
+    // Bitwise
+    BitAnd {
+        dst: u8,
+        lhs: u8,
+        rhs: u8,
+    },
+    BitOr {
+        dst: u8,
+        lhs: u8,
+        rhs: u8,
+    },
+    BitXor {
+        dst: u8,
+        lhs: u8,
+        rhs: u8,
+    },
+    Shl {
+        dst: u8,
+        lhs: u8,
+        rhs: u8,
+    },
+    Shr {
+        dst: u8,
+        lhs: u8,
+        rhs: u8,
+    },
+    /// Bitwise NOT (unary)
+    BitNot {
+        dst: u8,
+        src: u8,
+    },
+
     // Comparison (result stored as boolean in `dst`)
     Eq {
         dst: u8,

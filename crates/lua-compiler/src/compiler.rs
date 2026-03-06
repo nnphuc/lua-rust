@@ -1635,12 +1635,31 @@ impl Compiler {
                         self.patch_jump(skip, end - (skip as i16 + 1));
                         return Ok(dst);
                     }
-                    _ => {
-                        return Err(LuaError::Internal(format!(
-                            "binop {:?} not implemented",
-                            op
-                        )))
-                    }
+                    BinOp::BitAnd => OpCode::BitAnd {
+                        dst,
+                        lhs: l,
+                        rhs: r,
+                    },
+                    BinOp::BitOr => OpCode::BitOr {
+                        dst,
+                        lhs: l,
+                        rhs: r,
+                    },
+                    BinOp::BitXor => OpCode::BitXor {
+                        dst,
+                        lhs: l,
+                        rhs: r,
+                    },
+                    BinOp::Shl => OpCode::Shl {
+                        dst,
+                        lhs: l,
+                        rhs: r,
+                    },
+                    BinOp::Shr => OpCode::Shr {
+                        dst,
+                        lhs: l,
+                        rhs: r,
+                    },
                 };
                 self.proto.emit(opcode);
                 Ok(dst)
@@ -1653,9 +1672,7 @@ impl Compiler {
                     UnOp::Neg => OpCode::Unm { dst, src },
                     UnOp::Not => OpCode::Not { dst, src },
                     UnOp::Len => OpCode::Len { dst, src },
-                    UnOp::BitNot => {
-                        return Err(LuaError::Internal("bitwise not not yet implemented".into()))
-                    }
+                    UnOp::BitNot => OpCode::BitNot { dst, src }
                 };
                 self.proto.emit(opcode);
                 Ok(dst)

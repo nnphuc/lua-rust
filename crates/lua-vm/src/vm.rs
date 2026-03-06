@@ -592,6 +592,92 @@ impl Vm {
                     reg!(*dst) = v;
                 }
 
+                // ── Bitwise ─────────────────────────────────────────────────
+                OpCode::BitAnd { dst, lhs, rhs } => {
+                    let lhs_v = reg!(*lhs).clone();
+                    let rhs_v = reg!(*rhs).clone();
+                    match bitwise_and(&lhs_v, &rhs_v) {
+                        Ok(v) => reg!(*dst) = v,
+                        Err(_) => {
+                            let mm = self.binary_metamethod(&lhs_v, &rhs_v, "__band");
+                            match mm {
+                                LuaValue::Nil => return Err(LuaError::TypeError { expected: "integer", got: lhs_v.type_name() }),
+                                LuaValue::NativeFunction(f) => { reg!(*dst) = f(vec![lhs_v, rhs_v])?.into_iter().next().unwrap_or(LuaValue::Nil); }
+                                LuaValue::Closure(callee) => { let fa = base + *dst as usize; regs[fa] = lhs_v; regs[fa+1] = rhs_v; frames.push(CallFrame { closure: callee, ip: 0, base: fa, result_base: Some(fa), expected_results: 1, varargs: vec![] }); continue; }
+                                v => return Err(LuaError::TypeError { expected: "function", got: v.type_name() }),
+                            }
+                        }
+                    }
+                }
+                OpCode::BitOr { dst, lhs, rhs } => {
+                    let lhs_v = reg!(*lhs).clone();
+                    let rhs_v = reg!(*rhs).clone();
+                    match bitwise_or(&lhs_v, &rhs_v) {
+                        Ok(v) => reg!(*dst) = v,
+                        Err(_) => {
+                            let mm = self.binary_metamethod(&lhs_v, &rhs_v, "__bor");
+                            match mm {
+                                LuaValue::Nil => return Err(LuaError::TypeError { expected: "integer", got: lhs_v.type_name() }),
+                                LuaValue::NativeFunction(f) => { reg!(*dst) = f(vec![lhs_v, rhs_v])?.into_iter().next().unwrap_or(LuaValue::Nil); }
+                                LuaValue::Closure(callee) => { let fa = base + *dst as usize; regs[fa] = lhs_v; regs[fa+1] = rhs_v; frames.push(CallFrame { closure: callee, ip: 0, base: fa, result_base: Some(fa), expected_results: 1, varargs: vec![] }); continue; }
+                                v => return Err(LuaError::TypeError { expected: "function", got: v.type_name() }),
+                            }
+                        }
+                    }
+                }
+                OpCode::BitXor { dst, lhs, rhs } => {
+                    let lhs_v = reg!(*lhs).clone();
+                    let rhs_v = reg!(*rhs).clone();
+                    match bitwise_xor(&lhs_v, &rhs_v) {
+                        Ok(v) => reg!(*dst) = v,
+                        Err(_) => {
+                            let mm = self.binary_metamethod(&lhs_v, &rhs_v, "__bxor");
+                            match mm {
+                                LuaValue::Nil => return Err(LuaError::TypeError { expected: "integer", got: lhs_v.type_name() }),
+                                LuaValue::NativeFunction(f) => { reg!(*dst) = f(vec![lhs_v, rhs_v])?.into_iter().next().unwrap_or(LuaValue::Nil); }
+                                LuaValue::Closure(callee) => { let fa = base + *dst as usize; regs[fa] = lhs_v; regs[fa+1] = rhs_v; frames.push(CallFrame { closure: callee, ip: 0, base: fa, result_base: Some(fa), expected_results: 1, varargs: vec![] }); continue; }
+                                v => return Err(LuaError::TypeError { expected: "function", got: v.type_name() }),
+                            }
+                        }
+                    }
+                }
+                OpCode::Shl { dst, lhs, rhs } => {
+                    let lhs_v = reg!(*lhs).clone();
+                    let rhs_v = reg!(*rhs).clone();
+                    match bitwise_shl(&lhs_v, &rhs_v) {
+                        Ok(v) => reg!(*dst) = v,
+                        Err(_) => {
+                            let mm = self.binary_metamethod(&lhs_v, &rhs_v, "__shl");
+                            match mm {
+                                LuaValue::Nil => return Err(LuaError::TypeError { expected: "integer", got: lhs_v.type_name() }),
+                                LuaValue::NativeFunction(f) => { reg!(*dst) = f(vec![lhs_v, rhs_v])?.into_iter().next().unwrap_or(LuaValue::Nil); }
+                                LuaValue::Closure(callee) => { let fa = base + *dst as usize; regs[fa] = lhs_v; regs[fa+1] = rhs_v; frames.push(CallFrame { closure: callee, ip: 0, base: fa, result_base: Some(fa), expected_results: 1, varargs: vec![] }); continue; }
+                                v => return Err(LuaError::TypeError { expected: "function", got: v.type_name() }),
+                            }
+                        }
+                    }
+                }
+                OpCode::Shr { dst, lhs, rhs } => {
+                    let lhs_v = reg!(*lhs).clone();
+                    let rhs_v = reg!(*rhs).clone();
+                    match bitwise_shr(&lhs_v, &rhs_v) {
+                        Ok(v) => reg!(*dst) = v,
+                        Err(_) => {
+                            let mm = self.binary_metamethod(&lhs_v, &rhs_v, "__shr");
+                            match mm {
+                                LuaValue::Nil => return Err(LuaError::TypeError { expected: "integer", got: lhs_v.type_name() }),
+                                LuaValue::NativeFunction(f) => { reg!(*dst) = f(vec![lhs_v, rhs_v])?.into_iter().next().unwrap_or(LuaValue::Nil); }
+                                LuaValue::Closure(callee) => { let fa = base + *dst as usize; regs[fa] = lhs_v; regs[fa+1] = rhs_v; frames.push(CallFrame { closure: callee, ip: 0, base: fa, result_base: Some(fa), expected_results: 1, varargs: vec![] }); continue; }
+                                v => return Err(LuaError::TypeError { expected: "function", got: v.type_name() }),
+                            }
+                        }
+                    }
+                }
+                OpCode::BitNot { dst, src } => {
+                    let v = bitwise_not(&reg!(*src).clone())?;
+                    reg!(*dst) = v;
+                }
+
                 // ── Comparison ────────────────────────────────────────────────
                 OpCode::Eq { dst, lhs, rhs } => {
                     let lhs_v = reg!(*lhs).clone();
@@ -1332,6 +1418,45 @@ impl Vm {
                     reg!(*dst) = arith_unm(&reg!(*src).clone())?;
                 }
 
+                OpCode::BitAnd { dst, lhs, rhs } => {
+                    let (lv, rv) = (reg!(*lhs).clone(), reg!(*rhs).clone());
+                    match bitwise_and(&lv, &rv) {
+                        Ok(v) => reg!(*dst) = v,
+                        Err(_) => { let mm = self.binary_metamethod(&lv, &rv, "__band"); match mm { LuaValue::Nil => return Err(LuaError::TypeError { expected: "integer", got: lv.type_name() }), LuaValue::NativeFunction(f) => { reg!(*dst) = f(vec![lv, rv])?.into_iter().next().unwrap_or(LuaValue::Nil); } LuaValue::Closure(callee) => { let fa = base + *dst as usize; state.regs[fa] = lv; state.regs[fa+1] = rv; state.frames.push(CallFrame { closure: callee, ip: 0, base: fa, result_base: Some(fa), expected_results: 1, varargs: vec![] }); continue; } v => return Err(LuaError::TypeError { expected: "function", got: v.type_name() }), } }
+                    }
+                }
+                OpCode::BitOr { dst, lhs, rhs } => {
+                    let (lv, rv) = (reg!(*lhs).clone(), reg!(*rhs).clone());
+                    match bitwise_or(&lv, &rv) {
+                        Ok(v) => reg!(*dst) = v,
+                        Err(_) => { let mm = self.binary_metamethod(&lv, &rv, "__bor"); match mm { LuaValue::Nil => return Err(LuaError::TypeError { expected: "integer", got: lv.type_name() }), LuaValue::NativeFunction(f) => { reg!(*dst) = f(vec![lv, rv])?.into_iter().next().unwrap_or(LuaValue::Nil); } LuaValue::Closure(callee) => { let fa = base + *dst as usize; state.regs[fa] = lv; state.regs[fa+1] = rv; state.frames.push(CallFrame { closure: callee, ip: 0, base: fa, result_base: Some(fa), expected_results: 1, varargs: vec![] }); continue; } v => return Err(LuaError::TypeError { expected: "function", got: v.type_name() }), } }
+                    }
+                }
+                OpCode::BitXor { dst, lhs, rhs } => {
+                    let (lv, rv) = (reg!(*lhs).clone(), reg!(*rhs).clone());
+                    match bitwise_xor(&lv, &rv) {
+                        Ok(v) => reg!(*dst) = v,
+                        Err(_) => { let mm = self.binary_metamethod(&lv, &rv, "__bxor"); match mm { LuaValue::Nil => return Err(LuaError::TypeError { expected: "integer", got: lv.type_name() }), LuaValue::NativeFunction(f) => { reg!(*dst) = f(vec![lv, rv])?.into_iter().next().unwrap_or(LuaValue::Nil); } LuaValue::Closure(callee) => { let fa = base + *dst as usize; state.regs[fa] = lv; state.regs[fa+1] = rv; state.frames.push(CallFrame { closure: callee, ip: 0, base: fa, result_base: Some(fa), expected_results: 1, varargs: vec![] }); continue; } v => return Err(LuaError::TypeError { expected: "function", got: v.type_name() }), } }
+                    }
+                }
+                OpCode::Shl { dst, lhs, rhs } => {
+                    let (lv, rv) = (reg!(*lhs).clone(), reg!(*rhs).clone());
+                    match bitwise_shl(&lv, &rv) {
+                        Ok(v) => reg!(*dst) = v,
+                        Err(_) => { let mm = self.binary_metamethod(&lv, &rv, "__shl"); match mm { LuaValue::Nil => return Err(LuaError::TypeError { expected: "integer", got: lv.type_name() }), LuaValue::NativeFunction(f) => { reg!(*dst) = f(vec![lv, rv])?.into_iter().next().unwrap_or(LuaValue::Nil); } LuaValue::Closure(callee) => { let fa = base + *dst as usize; state.regs[fa] = lv; state.regs[fa+1] = rv; state.frames.push(CallFrame { closure: callee, ip: 0, base: fa, result_base: Some(fa), expected_results: 1, varargs: vec![] }); continue; } v => return Err(LuaError::TypeError { expected: "function", got: v.type_name() }), } }
+                    }
+                }
+                OpCode::Shr { dst, lhs, rhs } => {
+                    let (lv, rv) = (reg!(*lhs).clone(), reg!(*rhs).clone());
+                    match bitwise_shr(&lv, &rv) {
+                        Ok(v) => reg!(*dst) = v,
+                        Err(_) => { let mm = self.binary_metamethod(&lv, &rv, "__shr"); match mm { LuaValue::Nil => return Err(LuaError::TypeError { expected: "integer", got: lv.type_name() }), LuaValue::NativeFunction(f) => { reg!(*dst) = f(vec![lv, rv])?.into_iter().next().unwrap_or(LuaValue::Nil); } LuaValue::Closure(callee) => { let fa = base + *dst as usize; state.regs[fa] = lv; state.regs[fa+1] = rv; state.frames.push(CallFrame { closure: callee, ip: 0, base: fa, result_base: Some(fa), expected_results: 1, varargs: vec![] }); continue; } v => return Err(LuaError::TypeError { expected: "function", got: v.type_name() }), } }
+                    }
+                }
+                OpCode::BitNot { dst, src } => {
+                    reg!(*dst) = bitwise_not(&reg!(*src).clone())?;
+                }
+
                 OpCode::Eq { dst, lhs, rhs } => {
                     let lhs_v = reg!(*lhs).clone();
                     let rhs_v = reg!(*rhs).clone();
@@ -2065,6 +2190,67 @@ fn arith_unm(a: &LuaValue) -> Result<LuaValue, LuaError> {
             })
         }
     })
+}
+
+// ── Bitwise helpers ──────────────────────────────────────────────────────────
+
+fn to_integer(v: &LuaValue) -> Result<i64, LuaError> {
+    match v {
+        LuaValue::Integer(n) => Ok(*n),
+        LuaValue::Float(f) => {
+            if f.fract() == 0.0 && f.is_finite() {
+                Ok(*f as i64)
+            } else {
+                Err(LuaError::Runtime(format!(
+                    "number has no integer representation: {f}"
+                )))
+            }
+        }
+        _ => Err(LuaError::TypeError {
+            expected: "integer",
+            got: v.type_name(),
+        }),
+    }
+}
+
+fn bitwise_and(a: &LuaValue, b: &LuaValue) -> Result<LuaValue, LuaError> {
+    Ok(LuaValue::Integer(to_integer(a)? & to_integer(b)?))
+}
+
+fn bitwise_or(a: &LuaValue, b: &LuaValue) -> Result<LuaValue, LuaError> {
+    Ok(LuaValue::Integer(to_integer(a)? | to_integer(b)?))
+}
+
+fn bitwise_xor(a: &LuaValue, b: &LuaValue) -> Result<LuaValue, LuaError> {
+    Ok(LuaValue::Integer(to_integer(a)? ^ to_integer(b)?))
+}
+
+fn bitwise_shl(a: &LuaValue, b: &LuaValue) -> Result<LuaValue, LuaError> {
+    let x = to_integer(a)?;
+    let n = to_integer(b)?;
+    if n >= 64 || n <= -64 {
+        Ok(LuaValue::Integer(0))
+    } else if n >= 0 {
+        Ok(LuaValue::Integer(x.wrapping_shl(n as u32)))
+    } else {
+        Ok(LuaValue::Integer((x as u64).wrapping_shr((-n) as u32) as i64))
+    }
+}
+
+fn bitwise_shr(a: &LuaValue, b: &LuaValue) -> Result<LuaValue, LuaError> {
+    let x = to_integer(a)?;
+    let n = to_integer(b)?;
+    if n >= 64 || n <= -64 {
+        Ok(LuaValue::Integer(0))
+    } else if n >= 0 {
+        Ok(LuaValue::Integer((x as u64).wrapping_shr(n as u32) as i64))
+    } else {
+        Ok(LuaValue::Integer(x.wrapping_shl((-n) as u32)))
+    }
+}
+
+fn bitwise_not(a: &LuaValue) -> Result<LuaValue, LuaError> {
+    Ok(LuaValue::Integer(!to_integer(a)?))
 }
 
 // ── Comparison helpers ────────────────────────────────────────────────────────
